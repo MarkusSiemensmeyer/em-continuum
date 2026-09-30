@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>io.cocoon</groupId>
+    <artifactId>continuum</artifactId>
+    <name>Continuum</name>
+    <version>0.0.1-SNAPSHOT</version>
+
+    <properties>
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <umadb-client.version>0.7</umadb-client.version>
+        <spring-boot.version>4.1.1</spring-boot.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <!-- Plain Spring MVC, not WebFlux: UmaDbClient's core API is blocking (returns Iterator,
+             not a Publisher), so a reactive web layer would only hide the blocking calls behind
+             a Mono, not remove them. Virtual threads (see application.properties) is this
+             project's answer to "many concurrent blocking gRPC calls" instead. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+
+        <!-- Read model persistence: Spring Data JPA + PostgreSQL, default for all projections -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- UmaDB Java client (io.github.domenicdev is the published groupId; the classes
+             themselves live under the io.umadb.client package - see UmaDbConfig.java) -->
+        <dependency>
+            <groupId>io.github.domenicdev</groupId>
+            <artifactId>umadb-java-client</artifactId>
+            <version>${umadb-client.version}</version>
+        </dependency>
+
+        <!-- JSON codec for event/command payloads. Jackson 3 (tools.jackson.*), which is what
+             Spring Boot 4 uses by default; Jackson 2 (com.fasterxml.jackson.*) is deliberately
+             not on the classpath at all - the enforcer rule below keeps it that way. -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Auto-starts docker-compose.yml services (umadb, postgres) on app run -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-docker-compose</artifactId>
+            <scope>runtime</scope>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- @DataJpaTest's embedded database for fast, container-free projector tests -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- @DataJpaTest itself: Spring Boot 4 moved the test slices out of
+             spring-boot-starter-test into one artifact per technology module. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <parameters>true</parameters>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- Jackson 3 only: fail the build if anything drags Jackson 2 (com.fasterxml.jackson.*)
+                 back onto the classpath transitively. Spring Boot 4 still manages a Jackson 2 BOM
+                 for projects that need both, so without this the mistake would be silent. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.6.3</version>
+                <executions>
+                    <execution>
+                        <id>ban-jackson-2</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <bannedDependencies>
+                                    <excludes>
+                                        <exclude>com.fasterxml.jackson.core:*</exclude>
+                                        <exclude>com.fasterxml.jackson.datatype:*</exclude>
+                                        <exclude>com.fasterxml.jackson.module:*</exclude>
+                                        <exclude>com.fasterxml.jackson.dataformat:*</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-jackson2</exclude>
+                                        <exclude>org.springframework.boot:spring-boot-starter-jackson2</exclude>
+                                    </excludes>
+                                    <includes>
+                                        <!-- Jackson 3 deliberately still ships its annotations under the
+                                             Jackson 2 coordinates/package, so this one is not a v2 leak. -->
+                                        <include>com.fasterxml.jackson.core:jackson-annotations</include>
+                                    </includes>
+                                    <message>Jackson 2 is banned in this project - use Jackson 3 (tools.jackson.*).</message>
+                                </bannedDependencies>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Mockito's inline mock maker (Byte Buddy) needs this on a JDK newer than
+                         its officially-supported range; harmless on older JDKs too. -->
+                    <argLine>-Dnet.bytebuddy.experimental=true</argLine>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>
