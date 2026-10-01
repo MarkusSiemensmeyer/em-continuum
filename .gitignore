@@ -1,4 +1,11 @@
-/.build-kit/
+# Build kit: installed and refreshed by `eventmodelers re-init` - ignore its code, but version the
+# files that carry project-specific instructions or accumulated agent learnings.
+/.build-kit/*
+!/.build-kit/CLAUDE.md
+!/.build-kit/AGENTS.md
+!/.build-kit/lib/
+/.build-kit/lib/*
+!/.build-kit/lib/AGENT.md
 .eventmodelers/
 /.idea/
 /target/
