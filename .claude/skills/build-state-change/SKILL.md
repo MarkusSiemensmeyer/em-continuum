@@ -4,27 +4,51 @@ authors:
   - Martin Dilger
 description: >
   Implement DCB-style write slices against the raw UmaDB Java client in this project's one
-  established pattern: Command record → mutable Decision class (a Query + an apply(Event) fold) →
-  @Component CommandHandler using DecisionModelLoader → InMemoryUmaDbClient-based unit test (no
-  Spring context, no Docker). Use when implementing a new write slice / command handler from a
-  slice.json event model in this project. There is exactly one supported style — do not offer
-  alternatives.
+  established pattern, Functional Core / Imperative Shell: Command record → pure funcore Decision
+  (State record + evolve + decide) → @Component CommandHandler as imperative shell (all I/O, wrapped
+  in ConflictRetry) → optional RestController trigger → funcore/{SliceName}Specification (one test
+  per board GWT, run against the pure core) + a thin shell test on InMemoryUmaDbClient. Use when
+  implementing a new write slice / command handler from a slice.json event model in this project.
+  There is exactly one supported style — do not offer alternatives.
 ---
 
-# UmaDB — Write Slice
+# UmaDB — Write Slice (Functional Core / Imperative Shell)
 
-One pattern only. Directory layout is flat — `src/main/java/.../slices/{context}/{slicename}/`, no
-`write`/`read`/`automation` folder layer in between (only the shared `slices/{context}/events/`
-folder sits alongside slice folders). Every step below is grounded in the `RegisterCustomer` slice
-(single id field, test in `RegisterCustomerCommandHandlerTest`) and, for the compound-identifier
-case in Step 1, the `SubscribeToCourse` slice (test in `SubscribeToCourseCommandHandlerTest`) —
-both verified, compiled and passing under `mvn test` against
-`io.github.domenicdev:umadb-java-client:0.7` and a real `umadb/umadb:0.7.5` server.
+One pattern only. Every step is grounded in the verified reference context
+`src/main/java/<basePackage>/slices/blueprint/` — `registeritem` (REST-triggered) and
+`activateitem` (automation-triggered, with a "nothing to do" outcome), `openlocation` (never
+rejects: a repeat is a no-op) — compiled and passing under
+`mvn test`, including the architecture tests. **When in doubt, open the blueprint file of the same
+name and copy its shape.**
 
-UmaDB itself has no annotation-driven modelling layer at all (no `@Command`/`@Event`/`@Aggregate`
-the way Axon Framework has) — every convention below (the Decision class shape, the tag-string
-format, the `DecisionModelLoader` read-decide-append loop) is this project's own, hand-rolled once
-in the shared `eventstore` package and reused by every slice, not something UmaDB enforces itself.
+## The shape — read this first
+
+```
+.../slices/{context}/{slicename}/
+├── {SliceName}Command.java            ← record, plain data (the trigger's input)
+├── {SliceName}CommandHandler.java     ← IMPERATIVE SHELL: all I/O, ConflictRetry, the one entry point
+├── {SliceName}RestController.java     ← trigger (only if a SCREEN depends on the command)
+└── funcore/
+    └── {SliceName}Decision.java       ← FUNCTIONAL CORE: State + evolve + decide, pure
+src/test/java/.../slices/{context}/{slicename}/
+├── {SliceName}CommandHandlerTest.java ← shell wiring: boundary, tags, clock, append, retry
+└── funcore/
+    └── {SliceName}Specification.java  ← the board's GWTs + storyline beats, against the pure core
+```
+
+- **Every trigger enters the shell**, never the core: REST controller, automation processor,
+  listener — all call `{SliceName}CommandHandler.handle(command)`.
+- **The shell allocates ALL of the core's input** (folded state, current time, generated ids,
+  lookups), does ALL I/O, and appends the core's outcome.
+- **The whole read → decide → append runs inside `ConflictRetry.onConflict(...)`** — 5 immediate
+  attempts, re-run from scratch on a concurrent conflict.
+- **The core (`funcore/`) is pure**: no `io.umadb`, no Spring, no Jakarta, no Jackson, no
+  `eventstore`/`config` — not even transitively. `FunctionalCoreTest` fails the build otherwise.
+
+UmaDB has no modelling layer of its own (no `@Command`/`@Aggregate`); every convention here — the
+funcore shape, tag strings, `DecisionModelLoader.fold`/`append`, `ConflictRetry` — is this
+project's own, in the shared `eventstore` package. Never call
+`UmaDbClient.handle(ReadRequest/AppendRequest)` from a slice.
 
 ## Step 0: Read the slice definition
 
@@ -32,136 +56,236 @@ Read `.build-kit/.slices/{context}/{slicename}/slice.json`. Extract, and use **o
 
 - `commands[].fields[]` → Command record fields, in order
 - `events[].fields[]` → Event record fields, in order
-- `specifications[]` (GWT scenarios) → one test method per scenario
-- Which command field(s) have `idAttribute: true` — these become the tag(s) the command's Query and
-  the resulting event are both scoped to (see Step 1/Step 3)
-- `storylines[]` (optional, may be absent) → narrated walkthroughs with ordered `elements[]`
-  "beats"; see Step 7b for how a COMMAND beat in one of these can add a supplementary test
+- `specifications[]` (GWT scenarios) → one `{SliceName}Specification` test method each (Step 7)
+- Which command field(s) have `idAttribute: true` — the consistency boundary's and the event's tag(s)
+- `storylines[]` (optional) → Step 7b
 
 Never invent a field, business rule, or event that isn't in slice.json.
 
 ## Step 0a: Determine `{basePackage}`
 
-Every code example below is rooted at `{basePackage}.slices.{context}.{slicename}`. Resolve
-`{basePackage}` as documented in `.build-kit/CLAUDE.md` — never hardcode `io.umadb.quickstart` (the
-shipped quickstart scaffold's package) or any other specific package.
+Every path below is rooted at `{basePackage}.slices.{context}.{slicename}`. Resolve `{basePackage}`
+as documented in `.build-kit/CLAUDE.md` — never hardcode any specific package.
 
 ## Step 1: Command
 
-**Exactly one field has `idAttribute: true`** — no annotation needed (UmaDB has nothing like
-`@TargetEntityId`); the field is just referenced directly wherever the id is needed:
+Plain record in the slice package — data only, no behaviour:
 
 ```java
 package {basePackage}.slices.{context}.{slicename};
 
-public record {SliceName}Command(String field1, String idField) {}
+public record {SliceName}Command(String idField, String field1) {}
 ```
 
-**Two or more fields have `idAttribute: true`** — combine them into a compound id record, with a
-convenience method building it from the command. Verified against `SubscribeToCourseCommand`
-(`email` + `courseId` both `idAttribute: true`):
+**Two or more fields have `idAttribute: true`** — add a compound id record next to it and a
+convenience method on the command; the shell's `consistencyBoundary(...)` takes that id:
 
 ```java
-package {basePackage}.slices.{context}.{slicename};
-
 public record {SliceName}Id(String field1, String field2) {}
-```
-
-```java
-package {basePackage}.slices.{context}.{slicename};
 
 public record {SliceName}Command(String field1, String field2) {
-
-    public {SliceName}Id identifier() {
-        return new {SliceName}Id(field1, field2);
-    }
+    public {SliceName}Id identifier() { return new {SliceName}Id(field1, field2); }
 }
 ```
 
-The Decision's `relevantEvents(...)` (Step 3) and the CommandHandler (Step 4) both take this
-`{SliceName}Id` wherever a single id string would otherwise appear.
-
 ## Step 2: Event — only if it doesn't already exist
 
-Check `src/main/java/.../{context}/events/` first; add to the existing sealed interface rather than
-creating a duplicate.
+Check `.../slices/{context}/events/` first; add to what's there rather than duplicating.
+
+**First slice of a new context?** Create the context's events package once, exactly like
+`slices/blueprint/events/`:
+
+| File | Purpose |
+|---|---|
+| `{Context}Event.java` | `public sealed interface {Context}Event permits ...` |
+| `EventTags.java` | tag-key constants + `tag(key, value)` → `"key:value"` |
+| `{Context}Events.java` | the context's one `EventMapping<{Context}Event>`: type, tags, class per event (`MAPPING` singleton) |
+| `package-info.java` | `@NamedInterface("events")` — the context's published contract (Spring Modulith) |
+
+Each context is its own Spring Modulith module; **only its `events` package is visible to other
+contexts** (`ModularityTest` checks this). Commands, shells and cores stay internal.
+
+The event itself:
 
 ```java
 package {basePackage}.slices.{context}.events;
 
-public record {EventName}(String field1, String idField) implements {Context}Event {
+public record {EventName}(String idField, String field1) implements {Context}Event {
 
     public static final String TYPE = "{Context}.{EventName}";
 }
 ```
 
-`TYPE` is this project's own convention for what goes into UmaDB's `Event.type()` — UmaDB has no
-`@Event(namespace, name, version)` annotation of its own. Add the tag constant to the context's
-`EventTags` class if it isn't already there:
+Then register it — the sealed interface's `permits`, and all three switches in `{Context}Events`
+(the compiler flags a missing `case` in the exhaustive ones):
 
 ```java
-public static final String {TAG_CONSTANT} = "idField";
+// {Context}Event.java
+public sealed interface {Context}Event permits ..., {EventName} {}
+
+// {Context}Events.java
+case {EventName} e -> {EventName}.TYPE;                                       // typeOf
+case {EventName} e -> List.of(EventTags.tag(EventTags.{TAG_CONSTANT}, e.idField())); // tagsOf
+case {EventName}.TYPE -> {EventName}.class;                                  // classOf
 ```
 
-## Step 3: Decision class
+**Tag every event with every id it carries** — tags decide which consistency boundaries can find
+it later, and `{Context}Events` guarantees an event is tagged the same way whichever slice appends it.
 
-Package-private, mutable field(s) per fact a `specifications[]` scenario actually branches on —
-**not** an immutable state record with free-standing decide/evolve functions.
+**Adding an event to an existing context** makes the compiler flag every exhaustive `switch` over
+`{Context}Event` in the context's cores and shells. That's intended: decide per switch whether the
+new event matters there — add a `case` if it does, a `default` (e.g. `default -> state;` in an
+`evolve`) if it doesn't. Never silence it any other way.
 
-**Derive the field(s) from this slice's `specifications[]` (Step 0), not from the event's shape.**
-Each GWT scenario's `given`/`then` pair states the one decision the command handler must make and
-the prior fact that decision depends on — that fact is the field. A "given no prior activity" /
-"given already {X}" pair means one boolean flag for {X}; a scenario that discriminates on a value
-(not just presence/absence) means a value field holding that value, not a boolean.
+## Step 3: Functional core — `funcore/{SliceName}Decision`
+
+Pure functions over plain values. `public` (the shell lives in the parent package).
+
+**Derive the `State` fields from this slice's `specifications[]`, not from the event's shape.**
+Each GWT's given/then pair names one decision and the prior fact it depends on — that fact is a
+field. "given nothing" / "given already {X}" → one boolean for {X}; a scenario that discriminates on
+a value → a field holding that value.
+
+```java
+package {basePackage}.slices.{context}.{slicename}.funcore;
+
+import {basePackage}.slices.CommandRejectedException;
+import {basePackage}.slices.{context}.events.{Context}Event;
+import {basePackage}.slices.{context}.events.{EventName};
+import {basePackage}.slices.{context}.{slicename}.{SliceName}Command;
+
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * <b>Functional core</b> of the {SliceName} slice: pure functions over plain values - no I/O,
+ * no Spring, no {@code io.umadb.client} types. Everything it needs is handed in by the imperative
+ * shell ({@code {SliceName}CommandHandler}).
+ */
+public final class {SliceName}Decision {
+
+    /** The facts this decision branches on - and only those. */
+    public record State(boolean <ruleFlag>) {
+    }
+
+    public static final State INITIAL = new State(false);
+
+    private {SliceName}Decision() {
+    }
+
+    public static State evolve(State state, {Context}Event event) {
+        return switch (event) {
+            case {EventName} e -> new State(true);
+            default -> state;
+        };
+    }
+
+    public static List<{Context}Event> decide(State state, {SliceName}Command command, Instant now) {
+        if (state.<ruleFlag>()) {
+            throw new CommandRejectedException("...");  // rule text from slice.json
+        }
+        return List.of(new {EventName}(command.idField(), command.field1()));
+    }
+}
+```
+
+`decide` has exactly three outcomes — map each GWT `then` to one of them:
+
+| GWT `then` | `decide` returns |
+|---|---|
+| event(s) | `List.of(new Event(...), ...)` |
+| an error / rejection | `throw new CommandRejectedException(...)` |
+| nothing (a repeat is a harmless no-op) | `List.of()` |
+
+Prefer `List.of()` over a rejection when a spec says a repeated command changes nothing — an
+automation replaying from position 0 on every start then stays silent instead of logging errors.
+See `ActivateItemDecision`.
+
+**Anything not derivable from state + command is a `decide` parameter** — the current time
+(`Instant now`), a generated id, a looked-up value. The core never calls `Instant.now()`,
+`UUID.randomUUID()`, or anything else with I/O. Drop the `now` parameter if nothing needs it.
+
+## Step 4: Imperative shell — `{SliceName}CommandHandler`
 
 ```java
 package {basePackage}.slices.{context}.{slicename};
 
-import io.umadb.client.Event;
+import {basePackage}.eventstore.ConflictRetry;
+import {basePackage}.eventstore.DecisionModelLoader;
+import {basePackage}.slices.{context}.events.{Context}Events;
+import {basePackage}.slices.{context}.events.EventTags;
+import {basePackage}.slices.{context}.events.{EventName};
+import {basePackage}.slices.{context}.{slicename}.funcore.{SliceName}Decision;
 import io.umadb.client.Query;
 import io.umadb.client.QueryItem;
-import {basePackage}.slices.{context}.events.{EventName};
-import {basePackage}.slices.{context}.events.EventTags;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.stereotype.Component;
 
+import java.time.Clock;
 import java.util.List;
 
-class {SliceName}Decision {
+/**
+ * <b>Imperative shell</b> of the {SliceName} slice - the one entry into it for every trigger.
+ * All I/O of the slice happens here and only here; the decision is delegated to the pure
+ * {@link {SliceName}Decision}. The whole attempt is re-run on a concurrent conflict.
+ */
+@Component
+@ConditionalOnProperty(prefix = "slices.{context}.write", name = "{slicename}.enabled")
+public class {SliceName}CommandHandler {
 
-    boolean <ruleFlag>;
+    private final DecisionModelLoader loader;
+    private final Clock clock;
 
-    static Query relevantEvents(String idField) {
+    public {SliceName}CommandHandler(DecisionModelLoader loader, Clock clock) {
+        this.loader = loader;
+        this.clock = clock;
+    }
+
+    public void handle({SliceName}Command command) {
+        ConflictRetry.onConflict(() -> {
+            // 1. allocate the functional core's input (I/O)
+            var boundary = consistencyBoundary(command.idField());
+            var folded = loader.fold(boundary, {Context}Events.MAPPING, {SliceName}Decision.INITIAL, {SliceName}Decision::evolve);
+            var now = clock.instant();
+
+            // 2. functional core (pure)
+            var events = {SliceName}Decision.decide(folded.state(), command, now);
+
+            // 3. append the outcome (I/O), guarded by the same boundary it was decided on
+            loader.append(events, {Context}Events.MAPPING, boundary, folded.lastPosition());
+        });
+    }
+
+    /** The facts {@link {SliceName}Decision} needs. */
+    static Query consistencyBoundary(String idField) {
         return Query.of(QueryItem.of(
                 List.of({EventName}.TYPE),
                 List.of(EventTags.tag(EventTags.{TAG_CONSTANT}, idField))
         ));
     }
-
-    void apply(Event event) {
-        if (event.type().equals({EventName}.TYPE)) {
-            this.<ruleFlag> = true;
-        }
-    }
 }
 ```
 
-`apply` takes the raw `io.umadb.client.Event`, not a decoded domain object — most decisions only
-need to know a matching event of a given `type()` existed (a boolean flag). Only decode the payload
-(`EventCodec.fromEvent(event, {EventName}.class)`) when a scenario needs an actual field value, not
-just presence/absence.
+Keep the three numbered comments — they are what makes the shell's structure visible at a glance.
+The `Clock` bean comes from `config/ClockConfig`; drop it if `decide` needs no time.
 
-**Tag each event type by what THIS decision actually needs checked for it — not uniformly.** When
-multiple event types feed one decision (a `Query` with several `QueryItem`s, OR'd together), each
-item gets its own tag set, chosen per the specific invariant that event type is being loaded to
-verify — this is context-dependent, not a fixed property of the event type itself. Verified worked
-example — `SubscribeToCourseDecision`, id is `SubscriptionId(email, courseId)`, two rules, two
-different tag scopes on two different event types:
+**Retry rules** (`ConflictRetry` enforces the first two):
+- Only `OptimisticConcurrencyException` is retried; a `CommandRejectedException` never is.
+- The retry re-runs read → decide → append; retrying only the append would fail forever.
+- Everything in the attempt runs again per retry — so only repeatable I/O belongs here (reads, the
+  conditional append). Mails, payments, calls to other systems belong in an automation reacting
+  to the appended event, never in a write slice's shell.
+
+**Consistency boundary: tag each event type by what THIS decision checks — not uniformly.** Several
+event types feeding one decision → several `QueryItem`s (OR'd), each with its own tag set.
+Example (a `SubscribeToCourse` slice, compound id `SubscriptionId(email, courseId)`):
 
 ```java
-static Query relevantEvents(SubscriptionId id) {
+static Query consistencyBoundary(SubscriptionId id) {
     return Query.of(List.of(
         // "is this customer registered at all" — scoped to email only
         QueryItem.of(List.of(CustomerRegistered.TYPE), List.of(EventTags.tag(EventTags.EMAIL, id.email()))),
-        // "did this customer already subscribe to THIS course" — scoped to email + courseId
+        // "already subscribed to THIS course" — scoped to email + courseId
         QueryItem.of(List.of(SubscribedToCourse.TYPE), List.of(
                 EventTags.tag(EventTags.EMAIL, id.email()),
                 EventTags.tag(EventTags.COURSE_ID, id.courseId())))
@@ -169,71 +293,21 @@ static Query relevantEvents(SubscriptionId id) {
 }
 ```
 
-`CustomerRegistered` only needs the `email` tag — "is this customer registered" doesn't involve a
-course. `SubscribedToCourse` needs **both** `email` and `courseId` together — the rule is "already
-subscribed to *this* course", not "subscribed to any course". Getting the tag scope wrong doesn't
-fail loudly: too wide silently pulls in unrelated events, too narrow silently drops events the rule
-needed. See [references/umadb-query-patterns.md](references/umadb-query-patterns.md) for the full
-`Query`/`QueryItem` matching rules this relies on.
-
-## Step 4: Command handler
-
-Uses the shared `DecisionModelLoader` (in `{basePackage}.eventstore`) — never call
-`UmaDbClient.handle(ReadRequest...)`/`.handle(AppendRequest...)` directly from a command handler;
-the loader is this project's one shared read-decide-append loop (see its Javadoc for why).
-
-```java
-package {basePackage}.slices.{context}.{slicename};
-
-import {basePackage}.eventstore.DecisionModelLoader;
-import {basePackage}.slices.{context}.events.{EventName};
-import {basePackage}.slices.{context}.events.EventTags;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
-
-import java.util.List;
-
-@Component
-@ConditionalOnProperty(prefix = "slices.{context}.write", name = "{slicename}.enabled")
-public class {SliceName}CommandHandler {
-
-    private final DecisionModelLoader loader;
-
-    public {SliceName}CommandHandler(DecisionModelLoader loader) {
-        this.loader = loader;
-    }
-
-    public void handle({SliceName}Command command) {
-        var query = {SliceName}Decision.relevantEvents(command.idField());
-        var loaded = loader.load(query, {SliceName}Decision::new, {SliceName}Decision::apply);
-
-        if (loaded.decision().<ruleFlag>) {
-            throw new IllegalStateException("...");
-        }
-
-        loader.append(
-                new {EventName}(command.field1(), command.idField()),
-                {EventName}.TYPE,
-                List.of(EventTags.tag(EventTags.{TAG_CONSTANT}, command.idField())),
-                query,
-                loaded.lastPosition()
-        );
-    }
-}
-```
-
-`loader.append` throws `OptimisticConcurrencyException` (from `{basePackage}.eventstore`) if a
-conflicting event was appended concurrently between this handler's `load` and `append` calls — this
-IS the consistency boundary, not just a convenience; see
+Too wide silently pulls in unrelated events; too narrow silently drops events the rule needed. The
+same query is passed to `fold` and `append` — never a different one. See
 [references/umadb-query-patterns.md](references/umadb-query-patterns.md).
 
-## Step 5: REST endpoint — only if slice.json shows an inbound `SCREEN` dependency on the command
+## Step 5: REST trigger — only if slice.json shows an inbound `SCREEN` dependency on the command
+
+A trigger translates, calls the shell, translates back — nothing else:
 
 ```java
 package {basePackage}.slices.{context}.{slicename};
 
 import {basePackage}.eventstore.OptimisticConcurrencyException;
+import {basePackage}.slices.CommandRejectedException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -252,125 +326,160 @@ public class {SliceName}RestController {
     @PostMapping("/api/{context}/{resource}")
     public ResponseEntity<Void> handle(@RequestBody {SliceName}RequestBody body) {
         try {
-            commandHandler.handle(new {SliceName}Command(body.field1(), body.idField()));
+            commandHandler.handle(new {SliceName}Command(body.idField(), body.field1()));
             return ResponseEntity.ok().build();
-        } catch (IllegalStateException | OptimisticConcurrencyException e) {
-            return ResponseEntity.badRequest().build();
+        } catch (CommandRejectedException e) {
+            // business rule violated by the functional core
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT).build();
+        } catch (OptimisticConcurrencyException e) {
+            // still conflicting after all retries of the imperative shell
+            return ResponseEntity.status(HttpStatus.CONFLICT).build();
         }
     }
 
-    public record {SliceName}RequestBody(String field1, String idField) {}
+    public record {SliceName}RequestBody(String idField, String field1) {}
 }
 ```
 
-If the only inbound dependency is another slice's `AUTOMATION`, skip this step — an automation
-calls the command handler directly (see `build-automation`), it doesn't need HTTP.
-
-This project uses plain Spring MVC (`spring-boot-starter-web`), **not** WebFlux — `UmaDbClient`'s
-core API is blocking (returns `Iterator`, not a reactive `Publisher`), so a reactive controller
-would only hide the blocking calls behind a `Mono`, not remove them. Plain `ResponseEntity<...>`,
-not `Mono<ResponseEntity<...>>`.
+If the only inbound dependency is an `AUTOMATION`, skip this step — the automation's processor
+calls the shell directly (see `build-automation`). Plain Spring MVC, not WebFlux: `UmaDbClient` is
+blocking, so `ResponseEntity<...>`, not `Mono<...>`.
 
 ## Step 6: Feature flag
 
-Every slice component (command handler, REST controller) gets `@ConditionalOnProperty(prefix =
-"slices.{context}.write", name = "{slicename}.enabled")` — the Decision class does not need it.
-Wire the flag in both places:
+`@ConditionalOnProperty(prefix = "slices.{context}.write", name = "{slicename}.enabled")` on the
+command handler and REST controller — never on anything in `funcore/`. Wire it in both places:
 
 - `src/main/resources/application.properties` — `slices.{context}.write.{slicename}.enabled=true`
 - `src/test/resources/application.properties` — `slices.{context}.write.{slicename}.enabled=false`
 
-See [references/feature-flag-patterns.md](references/feature-flag-patterns.md) for the full
-pattern. This flag is irrelevant to the Step 7 test below — that test never boots Spring, so
-`@ConditionalOnProperty` never runs.
+See [references/feature-flag-patterns.md](references/feature-flag-patterns.md).
 
-## Step 7: Test — `InMemoryUmaDbClient`, no Spring context, no Docker
+## Step 7: Specification — `funcore/{SliceName}Specification` (the board's GWTs)
 
-UmaDB ships no test-fixture library (unlike Axon Framework's `axon-test`) — this project's
-`InMemoryUmaDbClient` (`src/test/java/.../testsupport/`, already in the root scaffold) is a
-from-scratch fake `UmaDbClient` implementation for exactly this. Write given/when/then as plain
-JUnit + AssertJ, one test method per GWT scenario in slice.json's `specifications[]`:
+**One test method per `specifications[]` entry**, `@DisplayName` = the spec's title, written with
+the shared `DecisionSpecification` DSL (`src/test/java/<basePackage>/testsupport/spec/`) straight
+against the pure core — no client, no Spring, no mocks. Use the spec's example values.
 
 ```java
-package {basePackage}.slices.{context}.{slicename};
+package {basePackage}.slices.{context}.{slicename}.funcore;
 
-import {basePackage}.eventstore.DecisionModelLoader;
-import {basePackage}.testsupport.InMemoryUmaDbClient;
-import org.junit.jupiter.api.BeforeEach;
+import {basePackage}.slices.{context}.events.{Context}Event;
+import {basePackage}.slices.{context}.events.{EventName};
+import {basePackage}.slices.{context}.{slicename}.{SliceName}Command;
+import {basePackage}.testsupport.spec.DecisionSpecification;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThatNoException;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import java.time.Instant;
 
-class {SliceName}CommandHandlerTest {
+/** {SliceName} - the board's specifications, one test each, run against the pure core. */
+class {SliceName}Specification {
 
-    private {SliceName}CommandHandler commandHandler;
+    private static final Instant NOW = Instant.parse("2026-10-01T10:00:00Z");
 
-    @BeforeEach
-    void setUp() {
-        var loader = new DecisionModelLoader(new InMemoryUmaDbClient());
-        commandHandler = new {SliceName}CommandHandler(loader);
-    }
+    private static final DecisionSpecification<{SliceName}Decision.State, {SliceName}Command, {Context}Event> SPEC =
+            DecisionSpecification.of({SliceName}Decision.INITIAL, {SliceName}Decision::evolve,
+                    (state, command) -> {SliceName}Decision.decide(state, command, NOW));
 
     @Test
-    @DisplayName("given no prior activity, when {sliceName}, then succeeds")
+    @DisplayName("{spec title from slice.json}")
     void happyPath() {
-        assertThatNoException().isThrownBy(
-                () -> commandHandler.handle(new {SliceName}Command("value1", "id-1")));
+        SPEC.given()
+                .when(new {SliceName}Command("id-1", "value1"))
+                .then(new {EventName}("id-1", "value1"));
     }
 
     @Test
-    @DisplayName("given <rule already true>, when {sliceName}, then rejected")
+    @DisplayName("{spec title from slice.json}")
     void ruleViolation() {
-        commandHandler.handle(new {SliceName}Command("value1", "id-1"));
-
-        assertThatThrownBy(() -> commandHandler.handle(new {SliceName}Command("value2", "id-1")))
-                .isInstanceOf(IllegalStateException.class);
+        SPEC.given(new {EventName}("id-1", "value1"))
+                .when(new {SliceName}Command("id-1", "value2"))
+                .thenRejected();
     }
 }
 ```
 
-When a slice's decision needs prior events from ANOTHER slice's command handler first (like
-`SubscribeToCourse` needing a `RegisterCustomer` to have happened), construct both command handlers
-from the SAME `DecisionModelLoader`/`InMemoryUmaDbClient` instance and call the prerequisite handler
-directly in the test — see `SubscribeToCourseCommandHandlerTest`. Don't hand-craft raw `Event`
-objects as a shortcut; go through the real command handler so the test also exercises that
-handler's own tagging.
+| GWT element | DSL |
+|---|---|
+| Given NOTHING | `SPEC.given()` |
+| Given event(s) | `SPEC.given(event1, event2)` — folded with the core's `evolve`, in order |
+| When command | `.when(command)` |
+| Then event(s) | `.then(event1, ...)` — exact events, exact order |
+| Then error / rejection | `.thenRejected()` |
+| Then nothing / no event | `.thenNothing()` |
 
-Full cheat sheet — `Query`/`QueryItem` matching, `AppendCondition` semantics, idempotent-append
-behaviour, why `subscribe()` isn't faked: see
-[references/umadb-query-patterns.md](references/umadb-query-patterns.md).
+Given events that other slices append are used as plain records here — no need to run their
+command handlers: the core only sees events.
 
-## Step 7b: Storyline-Derived Tests (Optional)
+## Step 7b: Storyline beats (optional, only if `storylines[]` is present)
 
-`slice.json` may carry a `storylines[]` array alongside `specifications[]` — narrated walkthroughs
-where an ordered sequence of `elements[]` "beats" (EVENT/COMMAND/READMODEL/...) shows one use case
-end to end. This is a secondary, supplementary source — `specifications[]` (Step 7) stays the
-primary and default source of test methods. Most slices have no `storylines[]`; skip this step
-silently when there's nothing relevant.
+A storyline usually crosses several slices, so its beats live **once per storyline** in the test
+tree at `src/test/java/<basePackage>/slices/{context}/{StorylineTitle}Storyline.java` — create it
+if missing, otherwise add only the beats that aren't there yet. Beats become numbered `public
+static final` constants built from each beat's `fields`/`examples` (see
+`blueprint/ItemLifecycleStoryline`):
 
-Find beats whose `type` is `COMMAND`. For each such beat: `given` = the cumulative ordered `EVENT`
-beats preceding it in the storyline (dispatched through their own real command handlers, per Step
-7's guidance), `when` = the command built from the beat's `fields`, `then` = the `EVENT` beat(s)
-immediately following it — asserted by reading the event back via a second `client.handle(ReadRequest...)`
-call, or more simply by asserting the command handler didn't throw and trusting Step 7's own
-per-field tests to have already covered the event's shape.
+```java
+/** 1. COMMAND - {beat narration} */
+public static final {SliceName}Command {BEAT_NAME} = new {SliceName}Command(...);
+/** 2. EVENT */
+public static final {EventName} {BEAT_NAME} = new {EventName}(...);
+```
 
-Do **not** try to also assert read-model state in this same test — that half belongs to
-`build-state-view`'s own storyline step, since this test never touches a projector. If the beat
-immediately after the command isn't an EVENT, don't force a test — leave it undocumented rather than
-fabricating an assertion.
+Then, in `{SliceName}Specification`, add one `@Nested` class per storyline (named after it) with a
+test for every `COMMAND` beat of this slice's command: given = the storyline's preceding `EVENT`
+beats, when = the beat, then = the `EVENT` beat(s) directly after it. If the beat after the command
+isn't an `EVENT`, don't force a test. Reference beats qualified (`{StorylineTitle}Storyline.BEAT`),
+never via a wildcard static import — a slice usually appears in several storylines, and they define
+the same names.
+
+```java
+@Nested
+@DisplayName("Storyline: " + {StorylineTitle}Storyline.TITLE)
+class {StorylineTitle} {
+
+    private static final DecisionSpecification<{SliceName}Decision.State, {SliceName}Command, {Context}Event> SPEC =
+            DecisionSpecification.of({SliceName}Decision.INITIAL, {SliceName}Decision::evolve,
+                    (state, command) -> {SliceName}Decision.decide(state, command, {StorylineTitle}Storyline.{TIME}));
+
+    @Test
+    @DisplayName("1 → 2: {SliceName} results in {EventName}")
+    void beat() {
+        SPEC.given(/* preceding EVENT beats, qualified */)
+                .when({StorylineTitle}Storyline.{COMMAND_BEAT})
+                .then({StorylineTitle}Storyline.{EVENT_BEAT});
+    }
+}
+```
+
+## Step 8: Shell test — `{SliceName}CommandHandlerTest`
+
+The rules are covered by Step 7; this test only proves the I/O wiring, on `InMemoryUmaDbClient`
+(`src/test/java/.../testsupport/`) with a fixed `Clock`. Copy `RegisterItemCommandHandlerTest` and
+adapt — at minimum:
+
+1. **Appends the decided event, tagged** — handle a command, read the store back
+   (`client.handle(ReadRequest.of(Query.empty()))`), assert type, tags and
+   `{Context}Events.MAPPING.decode(...)` equals the expected record.
+2. **A rejection propagates** — `CommandRejectedException` reaches the caller.
+3. **A concurrent write between read and append makes it re-read and re-decide** — use the
+   `ConcurrentWriterClient` pattern from `RegisterItemCommandHandlerTest` (appends a conflicting
+   event right before the first append); assert the outcome of the second decision and that the
+   store was read twice.
+
+If `decide` can return `List.of()`, also assert a repeat appends nothing (see
+`ActivateItemCommandHandlerTest`). The retry limit itself is covered once, by `ConflictRetryTest`.
 
 ## Final Verification
 
-Before considering the slice done:
-
-- [ ] Every field in slice.json's `commands[]` is in the Command record — no invented fields, none missing
-- [ ] Every field in slice.json's `events[]` is in the Event record — no invented fields, none missing
-- [ ] Every `specifications[]` scenario has a corresponding test method
-- [ ] If `storylines[]` is present: every COMMAND beat for this slice's command has a storyline test — or was deliberately skipped as untraceable
-- [ ] No business rule exists in the handler that isn't traceable to slice.json's `description`/`comments`
-- [ ] The Decision's `relevantEvents` query and the append's consistency-boundary query are the SAME query
-- [ ] `mvn compile -q`, then run the slice's own tests only
+- [ ] Every field in slice.json's `commands[]` is in the Command record — none invented, none missing
+- [ ] Every field in slice.json's `events[]` is in the Event record — none invented, none missing
+- [ ] New event registered in the sealed interface's `permits` and in all three `{Context}Events` switches
+- [ ] Every `specifications[]` scenario has exactly one test method in `funcore/{SliceName}Specification`
+- [ ] If `storylines[]` is present: every COMMAND beat of this slice has a `@Nested` storyline test — or was deliberately skipped as untraceable
+- [ ] No business rule exists that isn't traceable to slice.json's `description`/`comments`
+- [ ] `funcore/` holds only pure code; the shell does all I/O inside `ConflictRetry.onConflict`
+- [ ] `fold` and `append` get the SAME boundary query
+- [ ] `./mvnw compile -q`, then the slice's tests **and** `FunctionalCoreTest` + `ModularityTest`
 - [ ] If checks pass, commit with `feat: {Slice Name}` and set slice status to `Done`

@@ -3,28 +3,53 @@ name: build-state-view
 authors:
   - Martin Dilger
 description: >
-  Implement read slices (JPA-backed projections + query method + REST API + tests) that react to
-  events off the shared EventDispatcher subscription, in this project's one established pattern:
-  Query record → JPA entity/repository → @Component Projector implementing SliceEventListener →
-  plain on(event)/handle(query) unit test (no client, no Spring context). Use when implementing a
-  new read slice / projection from a slice.json event model in this project. There is exactly one
-  supported style — do not offer alternatives.
+  Implement read slices (projections + query + REST API + tests) that react to events off the
+  shared EventDispatcher subscription, in this project's one established pattern, Functional Core /
+  Imperative Shell: pure funcore Projection (evolve: current row + event → new row) and the row
+  record → @Component Projector as imperative shell (SliceEventListener: decode, load row via JPA,
+  evolve, save; answers the query) → Get{SliceName} query record + RestApi →
+  funcore/{SliceName}Specification (one test per board GWT, against the pure projection) + a
+  @DataJpaTest shell test. Use when implementing a new read slice / projection from a slice.json
+  event model in this project. There is exactly one supported style — do not offer alternatives.
 ---
 
-# UmaDB — Read Slice
+# UmaDB — Read Slice (Functional Core / Imperative Shell)
 
-Grounded in the `AllCustomers` slice (test in `AllCustomersProjectorTest`) — verified, compiled and
-passing under `mvn test`, including the one Testcontainers-based end-to-end test
-(`UmaDbContainerIntegrationTest`) that proves a real `umadb/umadb:0.7.5` server, `EventDispatcher`'s
-live subscription, and this JPA projection all wire together correctly for real.
+Grounded in the verified reference `slices/blueprint/items/` (ItemRegistered + ItemActivated →
+one row per item), compiled and passing under `mvn test`, including the architecture tests.
+**When in doubt, open the blueprint file of the same name and copy its shape.**
 
-UmaDB has no read-model/projection concept of its own (no `@EventHandler`, no query bus) — a read
-slice here is entirely this project's own convention, built on the shared `eventstore` package:
-`SliceEventListener` is the interface every projector implements, and `EventDispatcher` (already in
-the root scaffold, already proven — see below) is the ONE shared subscription that fans events out
-to every projector and automation processor in the app. **You do not need to write a new
-subscription or a new Testcontainers test for each read slice** — just implement
-`SliceEventListener` and `EventDispatcher` picks it up automatically as a Spring bean.
+UmaDB has no read-model concept of its own — a read slice is this project's own convention on the
+shared `eventstore` package: `SliceEventListener` is what every projector implements, and
+`EventDispatcher` (the ONE shared subscription) picks it up automatically as a Spring bean. **You do
+not write a subscription or a Testcontainers test per read slice.**
+
+## The shape — read this first
+
+```
+.../slices/{context}/{slicename}/
+├── Get{SliceName}.java           ← query record + nested Result
+├── {SliceName}Projector.java     ← IMPERATIVE SHELL: decode, load row, evolve, save; answers the query
+├── {SliceName}Entity.java        ← JPA entity, package-private - persistence shape, shell only
+├── {SliceName}Repository.java    ← package-private JpaRepository
+├── {SliceName}RestApi.java       ← trigger (if REST is exposed)
+└── funcore/
+    ├── {SliceName}Projection.java ← FUNCTIONAL CORE: evolve(Optional<row>, event) → Optional<row>, pure
+    └── {Row}.java                 ← the read model row record (+ any enums it uses)
+src/test/java/.../slices/{context}/{slicename}/
+├── {SliceName}ProjectorTest.java  ← shell wiring: decode, JPA load/save, query (@DataJpaTest, H2)
+└── funcore/
+    └── {SliceName}Specification.java ← the board's GWTs + storyline beats, against the projection
+```
+
+- **The projection decides how a row changes** — pure; `Optional.empty()` means "no row (yet)".
+- **The projector does the I/O**: decode the raw event, find the current row, run `evolve`, save.
+- **No `ConflictRetry`** — a projection can't hit an append conflict, and the dispatcher feeds each
+  listener from one thread in store order.
+- **Replay-safe by construction** — the dispatcher replays from position 0 on every start. Set
+  fields to absolute values taken from events; never increment/append blindly. Add a replay spec.
+- **The projection (`funcore/`) is pure** — `FunctionalCoreTest` fails the build otherwise.
+- Read slices are **never feature-flagged** (no `@ConditionalOnProperty`).
 
 ## Step 0: Discover Target Project Conventions
 
@@ -32,76 +57,87 @@ subscription or a new Testcontainers test for each read slice** — just impleme
 > and a `description` field — use them as implementation hints, and resolve consumed comments via
 > `POST <BASE_URL>/api/org/<ORG_ID>/boards/<BOARD_ID>/nodes/<nodeId>/comments/<commentId>/resolve`.
 
-Before writing any code, read the target project's `.build-kit/CLAUDE.md`.
+Read `.build-kit/CLAUDE.md`. Every path is rooted at `{basePackage}.slices.{context}.{slicename}`;
+resolve `{basePackage}` as documented there. If the slice description or comments contain
+`## Implementation Guidelines`, **follow them**.
 
-**Determine `{basePackage}`** — every code example below is rooted at
-`{basePackage}.slices.{context}.{slicename}`. Resolve `{basePackage}` as documented there.
+GWT format for read slices: `Given (events) → Then (information)` — no When. The events in Given
+tell you which events the projector reacts to; the information in Then is the expected read model.
 
 ## Step 1: Ensure Events Exist
 
-Before implementing the read slice, verify that every event the projector reacts to already exists
-in `src/main/java/.../{context}/events/`. If one doesn't, create it first following
-`build-state-change` Step 2 (sealed interface + concrete record + `TYPE` constant + `EventTags`
-entry) — a read slice never invents its own copy of an event another slice already owns.
+Every event the projector reacts to must already exist in `.../slices/{context}/events/` — create
+it first via `build-state-change` Step 2 if not. A read slice never invents its own copy of an
+event. **Events from another context** may only be imported from that context's `events` package
+(its Spring Modulith named interface) — `ModularityTest` fails the build otherwise.
 
-## Step 2: Implement the Read Slice
+## Step 2: Functional core — `funcore/`
 
-If the slice details include `## Scenarios (GWTs)`, use them to derive test cases. GWT format for
-read slices: `Given (events) → Then (information)` — no When. Events in Given tell you which events
-the projector reacts to. The information element in Then describes the expected query result.
-
-If the slice description or comments contain `## Implementation Guidelines`, **follow them**.
-
-A read slice lives in a single package. **Do NOT add Domain/Application/Presentation section
-comments** — those are only for write slices. Read slices are never feature-flagged (no
-`@ConditionalOnProperty`) — unlike write and automation slices.
-
-### Slice package structure
-
-```
-.../slices/{context}/{slicename}/      (i.e. {basePackage}.slices.{context}.{slicename} — see Step 0)
-├── Get{SliceName}.java       ← query record + nested Result
-├── {SliceName}Summary.java   ← read model (projection output shape)
-├── {SliceName}Entity.java    ← JPA entity, package-private
-├── {SliceName}Repository.java   ← package-private JpaRepository
-├── {SliceName}Projector.java ← @Component, implements SliceEventListener
-└── {SliceName}RestApi.java   ← @RestController (if REST chosen)
-```
-
-### Query record
+The row record — every field comes from the read model in slice.json, none invented:
 
 ```java
-package {basePackage}.slices.{context}.{slicename};
+package {basePackage}.slices.{context}.{slicename}.funcore;
 
-import java.util.List;
+/** One row of the {SliceName} read model - what the functional core computes and the query returns. */
+public record {Row}(String id, String field1, String field2) {}
+```
 
-public record Get{SliceName}({filterField type} {filterField}) {
+The projection — one `case` per event the slice reacts to:
 
-    public record Result(List<{SliceName}Summary> items) {}
+```java
+package {basePackage}.slices.{context}.{slicename}.funcore;
+
+import {basePackage}.slices.{context}.events.{Context}Event;
+import {basePackage}.slices.{context}.events.{CreationEvent};
+import {basePackage}.slices.{context}.events.{UpdateEvent};
+
+import java.util.Optional;
+
+/**
+ * <b>Functional core</b> of the {SliceName} read slice: how one row changes with each event -
+ * pure, no JPA. Loading the current row and saving the new one is the shell's job
+ * ({@code {SliceName}Projector}). {@code Optional.empty()} means "no row (yet)".
+ */
+public final class {SliceName}Projection {
+
+    private {SliceName}Projection() {
+    }
+
+    public static Optional<{Row}> evolve(Optional<{Row}> current, {Context}Event event) {
+        return switch (event) {
+            case {CreationEvent} e -> Optional.of(new {Row}(e.id(), e.field1(), current.map({Row}::field2).orElse(null)));
+            case {UpdateEvent} e -> current.map(row -> new {Row}(row.id(), row.field1(), e.field2()));
+            default -> current;
+        };
+    }
 }
 ```
 
-No `@Query` annotation exists in this project (UmaDB has nothing like Axon's query bus) — the
-record is just this slice's own input/output shape, called directly (see Step 3's `RestApi`).
+- A creation event builds the row but **keeps fields other events own** (`current.map(...)`), so a
+  replay of the creation event doesn't wipe them.
+- An update event for a row that doesn't exist yet leaves it absent (`current.map(...)`).
+- A "row removed" event returns `Optional.empty()` — the shell deletes it (see Step 3).
 
-### Read model summary
+## Step 3: Imperative shell
 
-```java
-public record {SliceName}Summary(String field1, String field2) {}
-```
-
-### JPA entity + repository
-
-Projections persist to a database via Spring Data JPA — this is the only supported style. Verified
-against `AllCustomersEntity`/`AllCustomersRepository`:
+Query record:
 
 ```java
 package {basePackage}.slices.{context}.{slicename};
 
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import {basePackage}.slices.{context}.{slicename}.funcore.{Row};
 
+import java.util.List;
+
+public record Get{SliceName}(/* filter fields from slice.json, if any */) {
+
+    public record Result(List<{Row}> items) {}
+}
+```
+
+JPA entity + repository — the persistence shape, never seen by the core:
+
+```java
 @Entity
 @Table(name = "{context}_{slicename}")
 class {SliceName}Entity {
@@ -109,47 +145,45 @@ class {SliceName}Entity {
     @Id
     private String id;
     private String field1;
+    private String field2;
 
     protected {SliceName}Entity() {
     }
 
-    {SliceName}Entity(String id, String field1) {
-        this.id = id;
-        this.field1 = field1;
-    }
+    static {SliceName}Entity from({Row} row) { /* copy each field */ }
 
-    {SliceName}Summary toSummary() {
-        return new {SliceName}Summary(id, field1);
+    {Row} toRow() {
+        return new {Row}(id, field1, field2);
     }
 }
-```
-
-```java
-package {basePackage}.slices.{context}.{slicename};
-
-import org.springframework.data.jpa.repository.JpaRepository;
 
 interface {SliceName}Repository extends JpaRepository<{SliceName}Entity, String> {
 }
 ```
 
-For filtered queries, add an indexed column and a derived-query method instead of `findAll()` —
-`@Table(indexes = {@Index(...)})` plus `List<{SliceName}Entity> findAllBy{FilterField}(String {filterField})`,
-used from the `@QueryHandler`-equivalent method below. DB-level filtering, not client-side.
+Enums from `funcore/` map with `@Enumerated(EnumType.STRING)`. For filtered queries add an indexed
+column and a derived query (`List<{SliceName}Entity> findAllBy{FilterField}(String value)`) —
+filter in the database, not in Java.
 
-### Projector — implements `SliceEventListener`
+The projector:
 
 ```java
 package {basePackage}.slices.{context}.{slicename};
 
-import io.umadb.client.Event;
-import {basePackage}.eventstore.EventCodec;
 import {basePackage}.eventstore.SliceEventListener;
-import {basePackage}.slices.{context}.events.{EventName};
+import {basePackage}.slices.{context}.events.{Context}Event;
+import {basePackage}.slices.{context}.events.{Context}Events;
+import {basePackage}.slices.{context}.events.{CreationEvent};
+import {basePackage}.slices.{context}.events.{UpdateEvent};
+import {basePackage}.slices.{context}.{slicename}.funcore.{SliceName}Projection;
+import io.umadb.client.Event;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-
+/**
+ * <b>Imperative shell</b> of the {SliceName} read slice. All I/O happens here; how a row changes
+ * is delegated to the pure {@link {SliceName}Projection}. No ConflictRetry: projections can't hit
+ * an append conflict, and the dispatcher feeds every listener from one thread in store order.
+ */
 @Component
 public class {SliceName}Projector implements SliceEventListener {
 
@@ -161,49 +195,43 @@ public class {SliceName}Projector implements SliceEventListener {
 
     @Override
     public boolean supports(String eventType) {
-        return {EventName}.TYPE.equals(eventType);
+        return {CreationEvent}.TYPE.equals(eventType) || {UpdateEvent}.TYPE.equals(eventType);
     }
 
     @Override
     public void onEvent(Event event) {
-        on(EventCodec.fromEvent(event, {EventName}.class));
-    }
+        // 1. allocate the functional core's input (I/O)
+        var domainEvent = {Context}Events.MAPPING.decode(event);
+        var current = repository.findById(rowIdOf(domainEvent)).map({SliceName}Entity::toRow);
 
-    /** Called directly (no client, no dispatcher) by {SliceName}ProjectorTest - see Step 4. */
-    public void on({EventName} event) {
-        repository.save(new {SliceName}Entity(event.idField(), event.field1()));
+        // 2. functional core (pure)
+        var updated = {SliceName}Projection.evolve(current, domainEvent);
+
+        // 3. persist the outcome (I/O)
+        updated.map({SliceName}Entity::from).ifPresent(repository::save);
     }
 
     public Get{SliceName}.Result handle(Get{SliceName} query) {
-        List<{SliceName}Summary> items = repository.findAll().stream()
-                .map({SliceName}Entity::toSummary)
-                .toList();
-        return new Get{SliceName}.Result(items);
+        return new Get{SliceName}.Result(repository.findAll().stream().map({SliceName}Entity::toRow).toList());
+    }
+
+    /** Which row an event belongs to - the read model's key, a persistence concern. */
+    private static String rowIdOf({Context}Event event) {
+        return switch (event) {
+            case {CreationEvent} e -> e.id();
+            case {UpdateEvent} e -> e.id();
+            default -> throw new IllegalArgumentException("Not projected: " + event);
+        };
     }
 }
 ```
 
-`supports`/`onEvent` are the only two methods `EventDispatcher` calls — everything else (`on`,
-`handle`) is this projector's own API, called directly by tests and by the REST layer. Multiple
-event types: repeat the `event.type().equals(...)` check in `supports`, and add one more public
-`on(OtherEvent event)` overload.
+If the projection can remove a row, persist that too:
+`updated.map(...).ifPresentOrElse(repository::save, () -> repository.deleteById(id))`.
 
-### Result DTO rules
-
-- If the read model matches the query result **1:1**, expose the summary record directly.
-- If the read model contains fields the caller already knows from the query (e.g. the filter
-  field), omit those from `Result` and map from the projector's internal model.
-
-## Step 3: REST API Exposure (Optional)
-
-Check the target project's convention first.
+REST API (if exposed) — a trigger that only calls the projector's query:
 
 ```java
-package {basePackage}.slices.{context}.{slicename};
-
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RestController;
-
 @RestController
 public class {SliceName}RestApi {
 
@@ -220,119 +248,101 @@ public class {SliceName}RestApi {
 }
 ```
 
-Plain Spring MVC, not WebFlux — same reasoning as `build-state-change` Step 5.
+Plain Spring MVC, not WebFlux. If the read model contains fields the caller already knows from the
+query (e.g. the filter), leave them out of `Result`; otherwise return the rows directly.
 
-## Step 4: Implement the Slice Test
+## Step 4: Specification — `funcore/{SliceName}Specification` (the board's GWTs)
 
-Pure unit test — instantiate the projector directly with a `@DataJpaTest`-provided repository, no
-`UmaDbClient` and no `EventDispatcher` involved. `@DataJpaTest` gives a real (embedded H2, not
-Testcontainers) JPA repository without a full Spring Boot application context:
+**One test method per `specifications[]` entry**, `@DisplayName` = the spec's title, written with
+the shared `ProjectionSpecification` DSL (`testsupport/spec/`) against the pure projection:
 
 ```java
-package {basePackage}.slices.{context}.{slicename};
+package {basePackage}.slices.{context}.{slicename}.funcore;
 
-import {basePackage}.slices.{context}.events.{EventName};
-import org.junit.jupiter.api.BeforeEach;
+import {basePackage}.slices.{context}.events.{Context}Event;
+import {basePackage}.slices.{context}.events.{CreationEvent};
+import {basePackage}.testsupport.spec.ProjectionSpecification;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 
-import static org.assertj.core.api.Assertions.assertThat;
+/** {SliceName} - the board's specifications, one test each, run against the pure projection. */
+class {SliceName}Specification {
 
-@DataJpaTest
-class {SliceName}ProjectorTest {
+    private static final ProjectionSpecification<{Row}, {Context}Event> SPEC =
+            ProjectionSpecification.of({SliceName}Projection::evolve);
 
-    @Autowired
-    private {SliceName}Repository repository;
-
-    private {SliceName}Projector projector;
-
-    @BeforeEach
-    void setUp() {
-        projector = new {SliceName}Projector(repository);
+    @Test
+    @DisplayName("{spec title from slice.json}")
+    void empty() {
+        SPEC.given().thenNothing();
     }
 
     @Test
-    @DisplayName("given no events, when query, then empty result")
-    void emptyState() {
-        var result = projector.handle(new Get{SliceName}());
-
-        assertThat(result.items()).isEmpty();
-    }
-
-    @Test
-    @DisplayName("given a {EventName} event, then it appears in the result")
-    void creationEvent() {
-        projector.on(new {EventName}("id-1", "value1"));
-
-        var result = projector.handle(new Get{SliceName}());
-
-        assertThat(result.items()).containsExactly(new {SliceName}Summary("id-1", "value1"));
+    @DisplayName("{spec title from slice.json}")
+    void created() {
+        SPEC.given(new {CreationEvent}("id-1", "value1"))
+                .then(new {Row}("id-1", "value1", null));
     }
 }
 ```
 
-Add a `com.h2database:h2` test-scope dependency once, project-wide, if it isn't already there
-(already in the root scaffold's `pom.xml`).
-
-### Mapping GWT Scenarios to Tests
-
-| GWT Element | Test Code |
+| GWT element | DSL |
 |---|---|
-| `NOTHING` in Given | instantiate projector, call `handle(query)` directly |
-| Event in Given | call `projector.on(event)` |
-| Information in Then | `assertThat(result.items()).containsExactlyInAnyOrder(...)` |
+| Given NOTHING | `SPEC.given()` |
+| Given event(s) | `SPEC.given(event1, event2)` — folded with `evolve`, in order, from no row |
+| Then the row | `.then(expectedRow)` |
+| Then empty / no entry | `.thenNothing()` |
 
-## Step 4b: Storyline-Derived Tests (Optional)
+The DSL checks one row. When a specification's Then lists several rows for different ids, write
+one spec method per row from the events of that id, or assert the query in the shell test (Step 5).
+Always add one **replay** spec (all given events twice → same row), named after the scenario it
+replays — it guards the dispatcher's restart behaviour.
 
-`slice.json` may also carry a `storylines[]` array — narrated walkthroughs where the *same* read
-model appears as multiple ordered "beats" across one flow. This is a secondary, supplementary
-source: `specifications[]` (Step 4) remains the primary and default source of test cases. Most
-slices have no `storylines[]` — skip this step silently when there's nothing relevant.
+## Step 4b: Storyline beats (optional, only if `storylines[]` is present)
 
-For each storyline, find beats whose `type` is `READMODEL`. Two such beats **adjacent with only
-`EVENT` beat(s) between them** describe one clean, isolable projection test — events = the
-cumulative ordered `EVENT` beats through the intervening event(s), expected result = the later
-`READMODEL` beat's `fields`/`examples`/`expectEmptyList`. Keep these in a `@Nested` class named
-after the storyline's title:
+Beats live once per storyline in `src/test/java/<basePackage>/slices/{context}/{StorylineTitle}Storyline.java`
+(create or extend it — see `build-state-change` Step 7b and `blueprint/ItemLifecycleStoryline`); the
+read model beats are `{Row}` constants. For every two `READMODEL` beats of this read model with only
+`EVENT` beats between them — and for the first `READMODEL` beat after its events — add a test to a
+`@Nested @DisplayName("Storyline: " + {StorylineTitle}Storyline.TITLE) class {StorylineTitle}` (one
+per storyline): given = all `EVENT` beats up to the later read-model beat, then = that beat.
+Reference beats qualified (`{StorylineTitle}Storyline.BEAT`), never via a wildcard static import.
 
 ```java
-@Nested
-@DisplayName("Storyline: {storyline.title}")
-class StorylineTests {
-    @Test
-    @DisplayName("after {EventName}, read model shows {expected state}")
-    void beatTransition() {
-        projector.on(new {EventName}(/* fields from the intervening beat(s) */));
-
-        var result = projector.handle(new Get{SliceName}());
-
-        assertThat(result.items()).containsExactly(/* expected shape from the later beat */);
-    }
+@Test
+@DisplayName("3 → 5 → 6: after {UpdateEvent}, {SliceName} shows ...")
+void beat() {
+    SPEC.given({StorylineTitle}Storyline.{EVENT_BEAT_2}, {StorylineTitle}Storyline.{EVENT_BEAT_5})
+            .then({StorylineTitle}Storyline.{READMODEL_BEAT_6});
 }
 ```
 
-If a beat between two read-model states is a `COMMAND` rather than an `EVENT`, that half belongs to
-`build-state-change` (its own command-handler test), not here.
+If a `COMMAND` sits between two read-model beats, that half belongs to `build-state-change`.
 
-## Reference: Proving `EventDispatcher` Itself (already done — don't repeat per slice)
+## Step 5: Shell test — `{SliceName}ProjectorTest`
 
-`{basePackage}.eventstore.EventDispatcher` (root scaffold) is the ONE shared live subscription every
-projector and automation reacts through — it's already proven end-to-end against a real
-`umadb/umadb:0.7.5` server via Testcontainers (`UmaDbContainerIntegrationTest`, verified against
-`AllCustomersProjector` + `AutoSubscribeToDefaultCourseProcessor`). A new read slice does not need
-its own Testcontainers test — implementing `SliceEventListener` correctly (Step 2) and unit-testing
-`on(event)`/`handle(query)` directly (Step 4) is sufficient; `EventDispatcher` will deliver real
-events to it in production exactly as it does for the already-verified slices.
+`@DataJpaTest` (Boot 4: `org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest`) gives
+a real repository on embedded H2, no full application context. Feed raw events exactly as
+`EventDispatcher` would. Copy `ItemsProjectorTest` and adapt — at minimum:
 
-## Final Verification: Does the Implementation Match slice.json?
+1. `supports` answers true for exactly the projected event types.
+2. Events for several rows → `handle(new Get{SliceName}())` returns all rows
+   (`containsExactlyInAnyOrder`).
+3. The same events delivered twice → rows unchanged.
 
-Before marking this slice as `Done`, verify the implementation against slice.json:
+```java
+private void deliver({Context}Event event) {
+    projector.onEvent({Context}Events.MAPPING.encode(event));
+}
+```
 
-- [ ] Every field in the read model / query result definition in slice.json has a field in `{SliceName}Summary` — no invented fields
-- [ ] Every event type in `events[]` has a `type().equals(...)` check in `supports` and a matching `on(...)` overload — no events missed or assumed
-- [ ] Every GWT scenario in `specifications[]` maps to a test case in `{SliceName}ProjectorTest`
-- [ ] If `storylines[]` is present: every adjacent READMODEL↔READMODEL beat pair for this slice's read model (with only EVENT beats between) has a `@Nested` storyline test — or was deliberately skipped as untraceable
-- [ ] No extra query parameters or filter logic were added beyond what slice.json defines
-- [ ] No field names were assumed or guessed — if a field is not in slice.json, it is not in the code
+## Final Verification
+
+- [ ] Every field of the read model in slice.json is in `{Row}` — none invented, none missing
+- [ ] Every event type in slice.json has a `case` in the projection and is answered by `supports`
+- [ ] Every `specifications[]` scenario has a test method in `funcore/{SliceName}Specification`, plus one replay spec
+- [ ] If `storylines[]` is present: every READMODEL beat pair (only EVENT beats between) has a `@Nested` storyline test — or was deliberately skipped as untraceable
+- [ ] No extra query parameters or filter logic beyond slice.json
+- [ ] `funcore/` holds only the pure projection and row types; the projector does all I/O
+- [ ] `./mvnw compile -q`, then the slice's tests **and** `FunctionalCoreTest` + `ModularityTest`
+- [ ] If checks pass, commit with `feat: {Slice Name}` and set slice status to `Done`

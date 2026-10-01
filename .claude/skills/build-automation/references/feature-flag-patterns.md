@@ -1,8 +1,8 @@
 # Feature Flag Patterns
 
-This project's one supported approach: `@ConditionalOnProperty` on the command handler and REST
-controller (**not** on the Decision class - verified against the `RegisterCustomer` and
-`SubscribeToCourse` slices, neither of which puts the annotation on its decision-model class).
+This project's one supported approach: `@ConditionalOnProperty` on the imperative shell and its
+triggers - command handler, REST controller, automation processor - and **never** on anything in a
+slice's `funcore/` package, which is pure and not a Spring bean at all (see `slices/blueprint/`).
 Read slices (`build-state-view`) are never feature-flagged - only write and automation slices are.
 Examples use a generic `Ordering` bounded context.
 
