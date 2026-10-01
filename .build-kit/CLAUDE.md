@@ -45,7 +45,22 @@ other specific package.
    and in tests `testsupport/spec` (`DecisionSpecification`, `AutomationSpecification`,
    `ReadModelAutomationSpecification`, `ProjectionSpecification`, `TranslationSpecification`) and
    `testsupport/InMemoryUmaDbClient`
-4. `slices/blueprint/` is the verified reference context for every slice type - copy its shapes
+4. `slices/blueprint/` is the verified reference context for every slice type - copy its shapes.
+   Which sub-package shows which Event Modeling pattern (declared per slice with
+   `@EventModelingPattern` on its `package-info.java`, checked by `BlueprintPatternMapTest`):
+
+   | Pattern | Blueprint example | Shows |
+   |---|---|---|
+   | State change | `registeritem` | REST trigger, rejection |
+   | State change | `activateitem` | automation trigger, repeat is a no-op |
+   | State change | `openlocation` | REST trigger, never rejects |
+   | State view | `items` | JPA projection, replay-safe |
+   | Automation | `automation/activateregistereditem` | stateless |
+   | Automation | `automation/activateitemsatopenedlocation` | private read model (todo list) |
+   | Translation | `translation/facilitysitestatus` | inbound: external message → our command |
+   | Translation | `translation/reportitemtoassetregistry` | outbound: our event → external system |
+   | Events | `events` | sealed event interface, tags, `EventMapping`, `@NamedInterface("events")` |
+   | Storylines | `*Storyline` (test sources) | beats replayed per slice; `SiteGoesLiveStoryline` uses every pattern |
 
 Ignore case for files and slices in prompts. "CartItems" slice is the same as "cartitems".
 
