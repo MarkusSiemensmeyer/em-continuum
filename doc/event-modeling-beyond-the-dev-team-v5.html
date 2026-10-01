@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speed Up Understanding</title>
+<style>
+  :root {
+    --paper: #f2f1ec;
+    --panel: #e6e4dd;
+    --ink: #1f1f1d;
+    --mid: #6e6d68;
+    --soft: #a9a7a0;
+    --rule: #cfccc4;
+    --accent: #e0561b;     /* Braun orange — used sparingly */
+    --cmd: #4f7396;        /* muted blue  */
+    --view: #6f8a55;       /* muted green */
+    --font: "Helvetica Neue", Helvetica, "Akzidenz-Grotesk", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #d9d7d0; overflow: hidden; }
+  body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
+
+  /* ---------- stage ---------- */
+  .stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  .deck { position: relative; width: 1600px; height: 900px; transform-origin: center center; }
+  .slide {
+    position: absolute; inset: 0; background: var(--paper);
+    padding: 96px 128px 112px; display: none; flex-direction: column;
+    box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 20px 60px rgba(0,0,0,.08);
+  }
+  .slide.active { display: flex; }
+
+  /* chrome on every slide */
+  .slide::before {             /* top-left label */
+    content: attr(data-label);
+    position: absolute; top: 48px; left: 128px;
+    font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid);
+  }
+  .slide .num {
+    position: absolute; top: 48px; right: 128px;
+    font-size: 15px; letter-spacing: .08em; color: var(--soft); font-variant-numeric: tabular-nums;
+  }
+  .slide .foot {
+    position: absolute; left: 128px; right: 128px; bottom: 48px;
+    border-top: 1px solid var(--rule); padding-top: 16px;
+    display: flex; justify-content: space-between; font-size: 14px; color: var(--soft); letter-spacing: .04em;
+  }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); vertical-align: middle; margin-right: 10px; }
+
+  /* ---------- type ---------- */
+  h1 { font-size: 104px; line-height: 1.0; font-weight: 500; letter-spacing: -.025em; }
+  h2 { font-size: 64px; line-height: 1.06; font-weight: 500; letter-spacing: -.02em; max-width: 1200px; }
+  h3 { font-size: 26px; font-weight: 500; letter-spacing: -.005em; margin-bottom: 10px; }
+  p, li { font-size: 26px; line-height: 1.45; color: var(--ink); }
+  .lead { font-size: 32px; line-height: 1.4; color: var(--mid); max-width: 1100px; }
+  .muted { color: var(--mid); }
+  .small { font-size: 20px; line-height: 1.45; color: var(--mid); }
+  .accent { color: var(--accent); }
+  .spacer { flex: 1; }
+  .mt-s { margin-top: 24px; } .mt-m { margin-top: 48px; } .mt-l { margin-top: 72px; }
+
+  /* ---------- building blocks ---------- */
+  .grid { display: grid; gap: 40px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g4 { grid-template-columns: repeat(4, 1fr); }
+  .cell { border-top: 2px solid var(--ink); padding-top: 20px; }
+  .cell.light { border-top-color: var(--rule); }
+  .cell .k { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); margin-bottom: 14px; display: block; }
+  .cell p { font-size: 23px; }
+
+  .list { list-style: none; }
+  .list li { padding: 18px 0; border-bottom: 1px solid var(--rule); display: flex; gap: 28px; align-items: baseline; }
+  .list li:first-child { border-top: 1px solid var(--rule); }
+  .list .n { font-size: 16px; color: var(--soft); width: 32px; flex: none; font-variant-numeric: tabular-nums; }
+
+  /* speaker-grille dot field, purely decorative */
+  .grille {
+    position: absolute; right: 128px; top: 170px; width: 280px; height: 280px;
+    background-image: radial-gradient(circle, var(--rule) 3.2px, transparent 3.6px);
+    background-size: 20px 20px;
+  }
+  .knob { position: absolute; width: 56px; height: 56px; border-radius: 50%; background: var(--accent); right: 240px; top: 500px; }
+  .slide .lead.narrow { max-width: 860px; }
+
+  /* translation chain */
+  .chain { display: flex; align-items: stretch; gap: 0; margin-top: 64px; }
+  .chain .step { flex: 1; padding: 24px 24px 28px; background: var(--panel); border-radius: 6px; }
+  .chain .step .k { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+  .chain .step p { font-size: 22px; margin-top: 10px; line-height: 1.35; }
+  .chain .arrow { width: 48px; display: grid; place-items: center; color: var(--soft); font-size: 26px; }
+  .chain .step.bad { background: var(--ink); color: var(--paper); }
+  .chain .step.bad .k { color: var(--soft); }
+  .chain .step.bad p { color: var(--paper); }
+  .costbar { display: flex; align-items: flex-end; gap: 48px; height: 150px; margin-top: 36px; padding: 0 0 0 0; }
+  .costbar div { flex: 1; background: var(--rule); border-radius: 3px 3px 0 0; }
+  .costbar div:last-child { background: var(--accent); }
+  .costlabel { display: flex; justify-content: space-between; margin-top: 12px; font-size: 16px; letter-spacing: .1em; text-transform: uppercase; color: var(--mid); }
+
+  /* event model strip */
+  .model { margin-top: 56px; display: grid; grid-template-columns: 200px repeat(5, 1fr); row-gap: 18px; column-gap: 20px; align-items: center; }
+  .model .lane { font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--mid); line-height: 1.3; }
+  .chip { border-radius: 5px; padding: 18px 18px; font-size: 21px; line-height: 1.25; min-height: 82px; display: flex; align-items: center; }
+  .chip.ui   { background: transparent; border: 1.5px solid var(--soft); color: var(--ink); }
+  .chip.cmd  { background: var(--cmd);  color: #fff; }
+  .chip.evt  { background: var(--accent); color: #fff; }
+  .chip.view { background: var(--view); color: #fff; }
+  .model .empty { min-height: 82px; }
+  .timeline { grid-column: 2 / span 5; border-top: 1px solid var(--ink); position: relative; margin-top: 10px; }
+  .timeline::after { content: "time  →"; position: absolute; right: 0; top: 10px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+
+  /* four readers */
+  .readers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; margin-top: 64px; }
+  .reader .icon { width: 72px; height: 72px; border-radius: 50%; border: 2px solid var(--ink); display: grid; place-items: center; font-size: 26px; font-weight: 500; margin-bottom: 28px; }
+  .reader.hl .icon { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .reader p { font-size: 23px; }
+  .reader .sees { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); margin-bottom: 8px; display: block; }
+  .oneline { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--rule); font-size: 28px; color: var(--mid); }
+
+  /* progress */
+  .compare { display: grid; grid-template-columns: 1fr 1px 1fr; gap: 80px; margin-top: 56px; align-items: start; }
+  .compare .sep { background: var(--rule); height: 100%; }
+  .big { font-size: 160px; font-weight: 400; letter-spacing: -.04em; line-height: 1; color: var(--soft); }
+  .squares { display: grid; grid-template-columns: repeat(7, 56px); gap: 12px; margin: 8px 0 28px; }
+  .squares i { width: 56px; height: 56px; border-radius: 4px; background: var(--panel); border: 1.5px solid var(--rule); }
+  .squares i.on { background: var(--accent); border-color: var(--accent); }
+
+  /* stays / changes */
+  .table { width: 100%; border-collapse: collapse; margin-top: 48px; }
+  .table th { text-align: left; font-weight: 400; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); padding: 0 0 16px; border-bottom: 2px solid var(--ink); }
+  .table td { font-size: 24px; padding: 18px 32px 18px 0; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.35; }
+  .table td:first-child { color: var(--mid); width: 22%; }
+
+  /* not-this */
+  .myth { display: grid; grid-template-columns: 1fr 1fr; gap: 0 64px; margin-top: 48px; }
+  .myth .row { display: contents; }
+  .myth .q, .myth .a { padding: 22px 0; border-bottom: 1px solid var(--rule); font-size: 24px; line-height: 1.35; }
+  .myth .q { color: var(--mid); }
+  .myth .q::before { content: "“"; } .myth .q::after { content: "”"; }
+  .myth .hd { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+
+  /* pilot timeline */
+  .phases { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 12px; margin-top: 56px; }
+  .phase { background: var(--panel); border-radius: 6px; padding: 24px 26px 28px; }
+  .phase.mid { background: var(--ink); color: var(--paper); }
+  .phase.mid .k, .phase.mid p { color: var(--paper); }
+  .phase .k { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+  .phase h3 { margin-top: 10px; }
+  .phase p { font-size: 21px; line-height: 1.4; color: var(--mid); }
+
+  /* metrics */
+  .metrics { margin-top: 40px; }
+  .metrics .row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 48px; padding: 18px 0; border-bottom: 1px solid var(--rule); align-items: baseline; }
+  .metrics .row:first-child { border-top: 2px solid var(--ink); }
+  .metrics .row p { font-size: 24px; }
+  .metrics .row p + p { color: var(--mid); font-size: 20px; }
+
+  /* asks */
+  .asks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 64px; }
+  .ask .n { width: 64px; height: 64px; border-radius: 50%; border: 2px solid var(--ink); display: grid; place-items: center; font-size: 24px; margin-bottom: 28px; }
+  .ask:first-child .n { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ask p { font-size: 23px; color: var(--mid); margin-top: 8px; }
+
+
+  /* effort bars */
+  .effort { display: flex; flex-direction: column; gap: 28px; }
+  .erow { display: grid; grid-template-columns: 180px 1fr; align-items: center; gap: 24px; }
+  .elabel { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+  .ebar { display: flex; gap: 0; height: 88px; }
+  .ebar div { border-radius: 4px; border-right: 6px solid var(--paper); background-clip: padding-box; display: flex; align-items: center; padding: 0 22px; font-size: 21px; white-space: nowrap; overflow: hidden; }
+  .ebar .u { background: var(--accent); color: #fff; }
+  .ebar .b { background: var(--ink); color: var(--paper); }
+  .ebar .f { background: #dcd9d1; color: var(--ink); }
+  .ebar div:last-child { border-right: 0; }
+  .ebar .gap { background: transparent; outline: 1.5px dashed var(--soft); outline-offset: -1.5px; color: var(--mid); font-size: 17px; letter-spacing: .12em; text-transform: uppercase; }
+  .elegend { display: grid; grid-template-columns: 1fr auto; margin-top: 40px; padding: 20px 0 0 204px; border-top: 1px solid var(--rule); }
+  .chain .step.ai { background: var(--cmd); color: #fff; }
+  .chain .step.ai .k, .chain .step.ai p { color: #fff; }
+
+  /* brief for AI */
+  .brief { display: grid; grid-template-columns: 1fr 80px 1fr; align-items: center; }
+  .brief .card { background: var(--panel); border-radius: 6px; padding: 32px 36px 28px; border-left: 6px solid var(--cmd); }
+  .brief .k, .out .k { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); display: block; }
+  .gwt { display: grid; grid-template-columns: 90px 1fr; gap: 16px; padding: 14px 0; border-top: 1px solid var(--rule); align-items: baseline; }
+  .gwt span { font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  .gwt p { font-size: 22px; line-height: 1.35; }
+  .big-arrow { text-align: center; font-size: 40px; color: var(--soft); }
+  .outs { display: flex; flex-direction: column; gap: 14px; }
+  .out { border-top: 2px solid var(--ink); padding: 14px 0 6px; }
+  .out p { font-size: 24px; margin-top: 4px; }
+  .out.hl { border-top-color: var(--accent); }
+  .out.hl .k { color: var(--accent); }
+
+  /* benefits */
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 96px; }
+  .colhead { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+  .colhead.accent { color: var(--accent); }
+  .blist { list-style: none; }
+  .blist li { padding: 16px 0; border-bottom: 1px solid var(--rule); display: block; }
+  .blist b { display: block; font-weight: 500; font-size: 24px; }
+  .blist span { display: block; font-size: 19px; color: var(--mid); margin-top: 2px; line-height: 1.4; }
+  .plain { list-style: none; }
+  .plain li { padding: 18px 0; border-bottom: 1px solid var(--rule); font-size: 25px; }
+
+
+  /* compact storyline with examples (v3) */
+  .model-slide .model { margin-top: 36px; row-gap: 12px; }
+  .model-slide .chip { min-height: 60px; padding: 12px 16px; font-size: 19px; }
+  .model-slide .model .empty { min-height: 60px; }
+  .ex { display: grid; grid-template-columns: 46px 1fr; column-gap: 6px; row-gap: 2px; font-size: 15px; line-height: 1.35; color: var(--ink);
+        padding: 10px 10px; border-top: 1.5px solid var(--rule); align-self: start; }
+  .model-slide .model { grid-template-columns: 200px repeat(5, 1fr); }
+  .model-slide .model + p { margin-top: 52px; }
+  .ex span { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); padding-top: 3px; }
+  .ex.hl { border-top: 2px solid var(--accent); background: var(--panel); border-radius: 0 0 4px 4px; }
+
+
+  /* step (slice) frames on the storyline (v4) */
+  :root { --slice: var(--accent); }
+  .model-slide .model { position: relative; margin-top: 60px; }
+  .frame { position: absolute; inset: -7px -6px -7px -6px; border: 2px solid var(--slice); border-radius: 8px; pointer-events: none; }
+  .frame span { position: absolute; top: -26px; left: 0; font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--slice); }
+
+  .squares i { background: transparent; border: 2px solid var(--slice); border-radius: 6px; }
+  .squares i.on { background: var(--slice); border-color: var(--slice); }
+
+  /* notes */
+  aside.notes { display: none; }
+  body.show-notes .notes-panel { display: block; }
+  .notes-panel {
+    display: none; position: fixed; left: 0; right: 0; bottom: 0; max-height: 34vh; overflow: auto;
+    background: rgba(31,31,29,.94); color: #eeede8; font: 16px/1.55 var(--font); padding: 18px 28px 22px; z-index: 10;
+  }
+  .notes-panel b { color: var(--accent); font-weight: 500; letter-spacing: .1em; text-transform: uppercase; font-size: 12px; display: block; margin-bottom: 6px; }
+
+  /* progress indicator */
+  .progress { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 8px; z-index: 5; }
+  .progress i { width: 7px; height: 7px; border-radius: 50%; background: #b9b6ae; cursor: pointer; }
+  .progress i.on { background: var(--accent); }
+  .hint { position: fixed; right: 16px; bottom: 10px; font: 12px var(--font); color: #8f8c84; letter-spacing: .05em; z-index: 5; }
+
+  /* print: one slide per page */
+  @media print {
+    @page { size: 1600px 900px; margin: 0; }
+    html, body { overflow: visible; height: auto; background: none; }
+    .stage { position: static; display: block; }
+    .deck { transform: none !important; width: 1600px; height: auto; }
+    .slide { position: relative; display: flex !important; width: 1600px; height: 900px; box-shadow: none; page-break-after: always; break-after: page; }
+    .progress, .hint, .notes-panel { display: none !important; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+<div class="deck" id="deck">
+
+<!-- 01 -->
+<section class="slide" data-label="Proposal · Event Modeling">
+  <div class="spacer"></div>
+  <h1>AI speeds up building.<br><span class="muted">Let’s speed up understanding.</span></h1>
+  <p class="lead narrow mt-m">Why a shared picture of our workflows is what makes AI pay off in how we build software.</p>
+  <div class="spacer"></div>
+  <div class="grille"></div><div class="knob"></div>
+  <aside class="notes">Open on common ground, not on a method. Nobody in the room has to be convinced that AI matters — the question is how we get real value out of it in software delivery without turning the organization upside down.</aside>
+</section>
+
+<!-- 02 -->
+<section class="slide" data-label="Common ground">
+  <h2>We don’t need to discuss <em style="font-style:normal" class="accent">whether</em> to use AI.<br><span class="muted">The question is where it pays off.</span></h2>
+  <div class="grid g3 mt-l">
+    <div class="cell"><span class="k">What AI changes</span><p>Writing code, tests and documentation becomes fast and cheap.</p></div>
+    <div class="cell"><span class="k">What it doesn’t change</span><p>Someone still has to know precisely what the software should do.</p></div>
+    <div class="cell"><span class="k">What follows</span><p>The value moves to the part before the code: understanding and agreeing.</p></div>
+  </div>
+  <aside class="notes">This is the hinge of the whole argument. AI is a multiplier on the building part. It does not resolve ambiguity in what business wants — it resolves it silently, by guessing.</aside>
+</section>
+
+<!-- 03 -->
+<section class="slide" data-label="The bottleneck moves">
+  <h2>When building gets faster,<br><span class="muted">understanding becomes the bottleneck.</span></h2>
+  <div class="effort mt-l">
+    <div class="erow">
+      <span class="elabel">Before AI</span>
+      <div class="ebar"><div class="u" style="flex:none;width:25%">Understand</div><div class="b" style="flex:none;width:50%">Build</div><div class="f" style="flex:none;width:25%">Test &amp; fix</div></div>
+    </div>
+    <div class="erow">
+      <span class="elabel">With AI</span>
+      <div class="ebar"><div class="u" style="flex:none;width:25%">Understand</div><div class="b" style="flex:none;width:15%">Build</div><div class="f" style="flex:none;width:25%">Test &amp; fix</div><div class="gap" style="flex:none;width:35%">Time freed up</div></div>
+    </div>
+  </div>
+  <div class="elegend">
+    <p class="small">Building shrinks. Understanding — and fixing what was misunderstood — does not.</p>
+    <p class="small" style="text-align:right">Illustrative, not measured</p>
+  </div>
+  <aside class="notes">Proportions are illustrative. The point: if we only speed up the middle, the share of time lost to unclear requirements and rework grows. The next big lever is not a faster code generator — it is a clearer input.</aside>
+</section>
+
+<!-- 04 -->
+<section class="slide" data-label="Where it breaks">
+  <h2>Software rarely fails in the code.<br><span class="muted">It fails in translation — and AI translates fast.</span></h2>
+  <div class="chain">
+    <div class="step"><span class="k">Business</span><p>has an intent</p></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">Document</span><p>writes it down</p></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">Analysis</span><p>interprets it</p></div>
+    <div class="arrow">→</div>
+    <div class="step ai"><span class="k">AI + Dev</span><p>builds the interpretation — quickly</p></div>
+    <div class="arrow">→</div>
+    <div class="step bad"><span class="k">Test / Go-live</span><p>“That’s not what we meant.”</p></div>
+  </div>
+  <div class="costbar"><div style="height:14%"></div><div style="height:22%"></div><div style="height:36%"></div><div style="height:60%"></div><div style="height:100%"></div></div>
+  <div class="costlabel"><span>Cost of fixing a misunderstanding</span><span>found late</span></div>
+  <aside class="notes">Nobody in this chain does a bad job; the loss accumulates at each hand-off. AI does not remove a hand-off — it is one more translator, a very fast one. A misunderstanding now reaches the end of the chain sooner and in larger volume.</aside>
+</section>
+
+<!-- 05 -->
+<section class="slide" data-label="Familiar symptoms">
+  <h2>AI won’t fix these on its own.</h2>
+  <ul class="list mt-l">
+    <li><span class="n">01</span>Requirements become clear only after development has started.</li>
+    <li><span class="n">02</span>Business and IT read the same requirement — and mean different things.</li>
+    <li><span class="n">03</span>Modernization efforts grow unexpectedly once we look inside.</li>
+    <li><span class="n">04</span>Estimates get buffers because nobody fully trusts them.</li>
+    <li><span class="n">05</span>Projects deliver — but not quite what was expected.</li>
+  </ul>
+  <aside class="notes">Ask: which of these have we seen in the last twelve months? These are cost, schedule and capacity issues. All of them start before the first line of code — exactly where AI does not help by itself.</aside>
+</section>
+
+<!-- 06 -->
+<section class="slide" data-label="The idea">
+  <div class="spacer"></div>
+  <p class="small" style="letter-spacing:.14em;text-transform:uppercase"><span class="dot"></span>In one sentence</p>
+  <h1 class="mt-s" style="font-size:80px;max-width:1340px">Make the flow of information visible — and find gaps and misunderstandings <span class="accent">before</span> anyone builds.</h1>
+  <p class="lead mt-m">Event Modeling is a simple, disciplined way to draw how information moves through a workflow, so that everyone can read it and nothing important stays implicit.</p>
+  <div class="spacer"></div>
+  <aside class="notes">This is the slide to remember. If someone only takes one thing away, it should be this sentence — not the name of the method.</aside>
+</section>
+
+<!-- 07 -->
+<section class="slide model-slide" data-label="What it looks like">
+  <h2>A storyline of the system,<br><span class="muted">read from left to right.</span></h2>
+  <div class="model">
+    <div class="lane">What people see</div>
+    <div class="chip ui">Leave request form</div>
+    <div class="empty"></div>
+    <div class="chip ui">Manager inbox</div>
+    <div class="empty"></div>
+    <div class="chip ui">Team calendar</div>
+
+    <div class="lane">What they do</div>
+    <div class="chip cmd">Request leave</div>
+    <div class="empty"></div>
+    <div class="chip cmd">Approve request</div>
+    <div class="empty"></div>
+    <div class="empty"></div>
+
+    <div class="lane">What happened</div>
+    <div class="chip evt">Leave requested</div>
+    <div class="empty"></div>
+    <div class="chip evt">Leave approved</div>
+    <div class="empty"></div>
+    <div class="empty"></div>
+
+    <div class="lane">What we show back</div>
+    <div class="empty"></div>
+    <div class="chip view">Open requests</div>
+    <div class="empty"></div>
+    <div class="chip view">Who is away</div>
+    <div class="empty"></div>
+
+    <div class="lane">Agreed examples</div>
+    <div class="ex"><span>Given</span>nothing yet<span>When</span>Anna asks for leave<span>Then</span>leave requested</div>
+    <div class="empty"></div>
+    <div class="ex hl"><span>Given</span>leave requested<span>When</span>manager approves<span>Then</span>leave approved</div>
+    <div class="empty"></div>
+    <div class="empty"></div>
+
+    <div class="frame" style="grid-column:2 / 3;grid-row:1 / 6"><span>Step 1</span></div>
+    <div class="frame" style="grid-column:3 / 4;grid-row:1 / 6"><span>Step 2</span></div>
+    <div class="frame" style="grid-column:4 / 5;grid-row:1 / 6"><span>Step 3</span></div>
+    <div class="frame" style="grid-column:5 / 6;grid-row:1 / 6"><span>Step 4</span></div>
+    <div class="frame" style="grid-column:6 / 7;grid-row:1 / 6"><span>Step 5</span></div>
+
+    <div></div><div class="timeline"></div>
+  </div>
+  <p class="small mt-s">Each frame is one step: small enough to build, test and show on its own. Every step can be questioned before a single line of code exists.</p>
+  <aside class="notes">Deliberately a non-IT example. Business people can read it after thirty seconds. The bottom row shows the agreed examples per step — short “given / when / then” sentences that business, testers and later AI all use. The valuable conversation is about the gaps: rejection, cancellation, overlapping requests, where data comes from.</aside>
+</section>
+
+<!-- 08 -->
+<section class="slide" data-label="One picture, four readers">
+  <h2>Everyone reads the same story —<br><span class="muted">for their own purpose.</span></h2>
+  <div class="readers">
+    <div class="reader hl"><div class="icon">B</div><span class="sees">Business expert sees</span><p>the process, in their own words</p></div>
+    <div class="reader"><div class="icon">D</div><span class="sees">Developer sees</span><p>concrete, independent pieces of work</p></div>
+    <div class="reader"><div class="icon">T</div><span class="sees">Tester sees</span><p>behaviour that has to be verified</p></div>
+    <div class="reader"><div class="icon">A</div><span class="sees">Architect sees</span><p>dependencies and how information flows</p></div>
+  </div>
+  <p class="oneline">No separate documents to keep in sync. Fewer translations, fewer places for meaning to get lost.</p>
+  <aside class="notes">Today each role owns its own artefact: requirements document, tickets, test plan, architecture diagram. They drift apart. Here they point at the same thing.</aside>
+</section>
+
+<!-- 09 -->
+<section class="slide" data-label="…and a fifth reader">
+  <h2>The same picture is<br><span class="muted">a precise brief for AI.</span></h2>
+  <div class="brief mt-l">
+    <div class="card">
+      <span class="k">The step from the storyline, with its examples</span>
+      <h3 style="margin-top:8px">Approve request</h3>
+      <div class="gwt"><span>Given</span><p>leave requested</p></div>
+      <div class="gwt"><span>When</span><p>manager approves</p></div>
+      <div class="gwt"><span>Then</span><p>leave approved</p></div>
+    </div>
+    <div class="arrow big-arrow">→</div>
+    <div class="outs">
+      <div class="out"><span class="k">AI generates</span><p>Code for exactly this step</p></div>
+      <div class="out"><span class="k">AI generates</span><p>Tests from the examples</p></div>
+      <div class="out hl"><span class="k">People review</span><p>The picture — not only thousands of lines of generated code</p></div>
+    </div>
+  </div>
+  <aside class="notes">Small, unambiguous steps with concrete examples are exactly the input AI works best with. And the review moves to where business can take part: the model. In our own project we already build steps directly from the board this way — happy to show it.</aside>
+</section>
+
+<!-- 10 -->
+<section class="slide" data-label="Progress, concretely">
+  <h2>Each step is a small, finished piece.<br><span class="muted">That changes how we talk about progress.</span></h2>
+  <div class="compare">
+    <div>
+      <p class="small" style="letter-spacing:.14em;text-transform:uppercase">Today</p>
+      <div class="big mt-s">72 %</div>
+      <p class="small mt-s">Of what? Which 28 % are missing — and are they the hard ones?</p>
+    </div>
+    <div class="sep"></div>
+    <div>
+      <p class="small" style="letter-spacing:.14em;text-transform:uppercase">Steps — the frames on the storyline</p>
+      <div class="squares mt-s">
+        <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i>
+        <i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <p style="font-size:30px">9 of 14 steps work end to end — you can try them.</p>
+      <p class="small mt-s">The remaining 5 are named and visible on the same picture.</p>
+    </div>
+  </div>
+  <aside class="notes">Each square is one framed step from the storyline slide (in Event Modeling: a “slice”): one thing a user can do and see. Done means demonstrable, not “mostly coded”. This runs alongside existing reporting — it does not replace it.</aside>
+</section>
+
+<!-- 11 -->
+<section class="slide" data-label="What it brings">
+  <h2>Benefits on two levels.</h2>
+  <div class="two mt-l">
+    <div>
+      <p class="colhead"><span class="dot"></span>For IT leadership</p>
+      <ul class="blist">
+        <li><b>Predictable delivery</b><span>Scope is visible up front — including the parts nobody mentioned.</span></li>
+        <li><b>Progress you can show</b><span>Working steps instead of percentages, in every management meeting.</span></li>
+        <li><b>AI under control</b><span>Generated work is anchored in a reviewed picture, not in a prompt.</span></li>
+        <li><b>Less dependency on individuals</b><span>Knowledge lives on the board, not in a few heads. Onboarding gets faster.</span></li>
+      </ul>
+    </div>
+    <div>
+      <p class="colhead"><span class="dot" style="background:var(--ink)"></span>For the company</p>
+      <ul class="blist">
+        <li><b>Less rework</b><span>Misunderstandings are fixed on a whiteboard, where they are cheap.</span></li>
+        <li><b>AI investment pays off</b><span>Faster building translates into faster <em>right</em> results.</span></li>
+        <li><b>Business and IT, one language</b><span>Decisions are made on the same picture, not via translations.</span></li>
+        <li><b>Safer modernization</b><span>Existing behaviour is made visible before it is replaced.</span></li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">Left column: arguments for the IT lead herself. Right column: arguments she can take to her managers. None of them requires anyone to understand the notation.</aside>
+</section>
+
+<!-- 12 -->
+<section class="slide" data-label="No reorganization needed">
+  <h2>It changes how we clarify requirements.<br><span class="muted">Not the org chart.</span></h2>
+  <div class="grid g2 mt-l" style="column-gap:96px">
+    <div>
+      <p class="colhead">Stays as it is</p>
+      <ul class="plain">
+        <li>Teams, roles and responsibilities</li>
+        <li>Budgeting, planning and governance</li>
+        <li>Existing status reporting</li>
+        <li>Tools and platforms already in use</li>
+      </ul>
+    </div>
+    <div>
+      <p class="colhead accent">What is new</p>
+      <ul class="plain">
+        <li>Business and IT draw the workflow together</li>
+        <li>One shared picture instead of several documents</li>
+        <li>Progress shown as finished steps — in addition</li>
+        <li>Can start with a single feature, no big bang</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="notes">Addresses the real worry: “AI yes, but please don’t reorganize us.” This is a way of working inside the existing structure. It grows where it proves useful.</aside>
+</section>
+
+<!-- 13 -->
+<section class="slide" data-label="Closing">
+  <div class="spacer"></div>
+  <h1 style="font-size:96px">Less, but better.</h1>
+  <p class="lead narrow mt-m">Fewer documents, fewer translations, fewer surprises —<br>and one picture that people and AI can work from.</p>
+  <p class="small mt-l">Let’s draw one of our own workflows together.</p>
+  <div class="spacer"></div>
+  <div class="grille"></div><div class="knob"></div>
+  <aside class="notes">“Weniger, aber besser” — Dieter Rams. The invitation is deliberately small: one hour, one real workflow, everyone in the room. That experience convinces more than any slide.</aside>
+</section>
+
+</div>
+</div>
+
+<div class="progress" id="progress"></div>
+<div class="hint">← → navigate · N notes · F fullscreen</div>
+<div class="notes-panel" id="notesPanel"></div>
+
+<script>
+(function () {
+  const deck = document.getElementById('deck');
+  const slides = Array.from(deck.querySelectorAll('.slide'));
+  const progress = document.getElementById('progress');
+  const notesPanel = document.getElementById('notesPanel');
+  const total = slides.length;
+  const pad = n => String(n).padStart(2, '0');
+
+  slides.forEach((s, i) => {
+    const num = document.createElement('div');
+    num.className = 'num'; num.textContent = pad(i + 1) + ' / ' + pad(total);
+    s.appendChild(num);
+    const foot = document.createElement('div');
+    foot.className = 'foot';
+    foot.innerHTML = '<span><span class="dot" style="width:7px;height:7px"></span>Event Modeling · Making AI pay off in software delivery</span><span>Draft v5</span>';
+    if (i > 0 && i < total - 1) s.appendChild(foot);
+    const d = document.createElement('i');
+    d.addEventListener('click', () => go(i));
+    progress.appendChild(d);
+  });
+
+  let cur = Math.min(Math.max(parseInt(location.hash.slice(1), 10) - 1 || 0, 0), total - 1);
+  function go(i) {
+    cur = Math.min(Math.max(i, 0), total - 1);
+    slides.forEach((s, j) => s.classList.toggle('active', j === cur));
+    Array.from(progress.children).forEach((d, j) => d.classList.toggle('on', j === cur));
+    const n = slides[cur].querySelector('aside.notes');
+    notesPanel.innerHTML = '<b>Notes · ' + pad(cur + 1) + '</b>' + (n ? n.innerHTML : '—');
+    history.replaceState(null, '', '#' + (cur + 1));
+  }
+  function fit() {
+    const s = Math.min(window.innerWidth / 1600, window.innerHeight / 900) * 0.96;
+    deck.style.transform = 'scale(' + s + ')';
+  }
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); go(cur + 1); }
+    else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); go(cur - 1); }
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(total - 1);
+    else if (e.key === 'n' || e.key === 'N') document.body.classList.toggle('show-notes');
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.();
+    }
+  });
+  let x0 = null;
+  document.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) go(cur + (dx < 0 ? 1 : -1));
+    x0 = null;
+  });
+  window.addEventListener('resize', fit);
+  fit(); go(cur);
+})();
+</script>
+</body>
+</html>

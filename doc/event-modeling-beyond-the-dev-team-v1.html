@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fewer Surprises in Delivery</title>
+<style>
+  :root {
+    --paper: #f2f1ec;
+    --panel: #e6e4dd;
+    --ink: #1f1f1d;
+    --mid: #6e6d68;
+    --soft: #a9a7a0;
+    --rule: #cfccc4;
+    --accent: #e0561b;     /* Braun orange — used sparingly */
+    --cmd: #4f7396;        /* muted blue  */
+    --view: #6f8a55;       /* muted green */
+    --font: "Helvetica Neue", Helvetica, "Akzidenz-Grotesk", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #d9d7d0; overflow: hidden; }
+  body { font-family: var(--font); color: var(--ink); -webkit-font-smoothing: antialiased; }
+
+  /* ---------- stage ---------- */
+  .stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  .deck { position: relative; width: 1600px; height: 900px; transform-origin: center center; }
+  .slide {
+    position: absolute; inset: 0; background: var(--paper);
+    padding: 96px 128px 112px; display: none; flex-direction: column;
+    box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 20px 60px rgba(0,0,0,.08);
+  }
+  .slide.active { display: flex; }
+
+  /* chrome on every slide */
+  .slide::before {             /* top-left label */
+    content: attr(data-label);
+    position: absolute; top: 48px; left: 128px;
+    font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid);
+  }
+  .slide .num {
+    position: absolute; top: 48px; right: 128px;
+    font-size: 15px; letter-spacing: .08em; color: var(--soft); font-variant-numeric: tabular-nums;
+  }
+  .slide .foot {
+    position: absolute; left: 128px; right: 128px; bottom: 48px;
+    border-top: 1px solid var(--rule); padding-top: 16px;
+    display: flex; justify-content: space-between; font-size: 14px; color: var(--soft); letter-spacing: .04em;
+  }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); vertical-align: middle; margin-right: 10px; }
+
+  /* ---------- type ---------- */
+  h1 { font-size: 104px; line-height: 1.0; font-weight: 500; letter-spacing: -.025em; }
+  h2 { font-size: 64px; line-height: 1.06; font-weight: 500; letter-spacing: -.02em; max-width: 1200px; }
+  h3 { font-size: 26px; font-weight: 500; letter-spacing: -.005em; margin-bottom: 10px; }
+  p, li { font-size: 26px; line-height: 1.45; color: var(--ink); }
+  .lead { font-size: 32px; line-height: 1.4; color: var(--mid); max-width: 1100px; }
+  .muted { color: var(--mid); }
+  .small { font-size: 20px; line-height: 1.45; color: var(--mid); }
+  .accent { color: var(--accent); }
+  .spacer { flex: 1; }
+  .mt-s { margin-top: 24px; } .mt-m { margin-top: 48px; } .mt-l { margin-top: 72px; }
+
+  /* ---------- building blocks ---------- */
+  .grid { display: grid; gap: 40px; }
+  .g2 { grid-template-columns: 1fr 1fr; }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+  .g4 { grid-template-columns: repeat(4, 1fr); }
+  .cell { border-top: 2px solid var(--ink); padding-top: 20px; }
+  .cell.light { border-top-color: var(--rule); }
+  .cell .k { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); margin-bottom: 14px; display: block; }
+  .cell p { font-size: 23px; }
+
+  .list { list-style: none; }
+  .list li { padding: 18px 0; border-bottom: 1px solid var(--rule); display: flex; gap: 28px; align-items: baseline; }
+  .list li:first-child { border-top: 1px solid var(--rule); }
+  .list .n { font-size: 16px; color: var(--soft); width: 32px; flex: none; font-variant-numeric: tabular-nums; }
+
+  /* speaker-grille dot field, purely decorative */
+  .grille {
+    position: absolute; right: 128px; top: 170px; width: 280px; height: 280px;
+    background-image: radial-gradient(circle, var(--rule) 3.2px, transparent 3.6px);
+    background-size: 20px 20px;
+  }
+  .knob { position: absolute; width: 56px; height: 56px; border-radius: 50%; background: var(--accent); right: 240px; top: 500px; }
+  .slide .lead.narrow { max-width: 860px; }
+
+  /* translation chain */
+  .chain { display: flex; align-items: stretch; gap: 0; margin-top: 64px; }
+  .chain .step { flex: 1; padding: 24px 24px 28px; background: var(--panel); border-radius: 6px; }
+  .chain .step .k { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+  .chain .step p { font-size: 22px; margin-top: 10px; line-height: 1.35; }
+  .chain .arrow { width: 48px; display: grid; place-items: center; color: var(--soft); font-size: 26px; }
+  .chain .step.bad { background: var(--ink); color: var(--paper); }
+  .chain .step.bad .k { color: var(--soft); }
+  .chain .step.bad p { color: var(--paper); }
+  .costbar { display: flex; align-items: flex-end; gap: 48px; height: 150px; margin-top: 36px; padding: 0 0 0 0; }
+  .costbar div { flex: 1; background: var(--rule); border-radius: 3px 3px 0 0; }
+  .costbar div:last-child { background: var(--accent); }
+  .costlabel { display: flex; justify-content: space-between; margin-top: 12px; font-size: 16px; letter-spacing: .1em; text-transform: uppercase; color: var(--mid); }
+
+  /* event model strip */
+  .model { margin-top: 56px; display: grid; grid-template-columns: 200px repeat(5, 1fr); row-gap: 18px; column-gap: 20px; align-items: center; }
+  .model .lane { font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--mid); line-height: 1.3; }
+  .chip { border-radius: 5px; padding: 18px 18px; font-size: 21px; line-height: 1.25; min-height: 82px; display: flex; align-items: center; }
+  .chip.ui   { background: transparent; border: 1.5px solid var(--soft); color: var(--ink); }
+  .chip.cmd  { background: var(--cmd);  color: #fff; }
+  .chip.evt  { background: var(--accent); color: #fff; }
+  .chip.view { background: var(--view); color: #fff; }
+  .model .empty { min-height: 82px; }
+  .timeline { grid-column: 2 / span 5; border-top: 1px solid var(--ink); position: relative; margin-top: 10px; }
+  .timeline::after { content: "time  →"; position: absolute; right: 0; top: 10px; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+
+  /* four readers */
+  .readers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 32px; margin-top: 64px; }
+  .reader .icon { width: 72px; height: 72px; border-radius: 50%; border: 2px solid var(--ink); display: grid; place-items: center; font-size: 26px; font-weight: 500; margin-bottom: 28px; }
+  .reader.hl .icon { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .reader p { font-size: 23px; }
+  .reader .sees { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); margin-bottom: 8px; display: block; }
+  .oneline { margin-top: 64px; padding-top: 24px; border-top: 1px solid var(--rule); font-size: 28px; color: var(--mid); }
+
+  /* progress */
+  .compare { display: grid; grid-template-columns: 1fr 1px 1fr; gap: 80px; margin-top: 56px; align-items: start; }
+  .compare .sep { background: var(--rule); height: 100%; }
+  .big { font-size: 160px; font-weight: 400; letter-spacing: -.04em; line-height: 1; color: var(--soft); }
+  .squares { display: grid; grid-template-columns: repeat(7, 56px); gap: 12px; margin: 8px 0 28px; }
+  .squares i { width: 56px; height: 56px; border-radius: 4px; background: var(--panel); border: 1.5px solid var(--rule); }
+  .squares i.on { background: var(--accent); border-color: var(--accent); }
+
+  /* stays / changes */
+  .table { width: 100%; border-collapse: collapse; margin-top: 48px; }
+  .table th { text-align: left; font-weight: 400; font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); padding: 0 0 16px; border-bottom: 2px solid var(--ink); }
+  .table td { font-size: 24px; padding: 18px 32px 18px 0; border-bottom: 1px solid var(--rule); vertical-align: top; line-height: 1.35; }
+  .table td:first-child { color: var(--mid); width: 22%; }
+
+  /* not-this */
+  .myth { display: grid; grid-template-columns: 1fr 1fr; gap: 0 64px; margin-top: 48px; }
+  .myth .row { display: contents; }
+  .myth .q, .myth .a { padding: 22px 0; border-bottom: 1px solid var(--rule); font-size: 24px; line-height: 1.35; }
+  .myth .q { color: var(--mid); }
+  .myth .q::before { content: "“"; } .myth .q::after { content: "”"; }
+  .myth .hd { font-size: 15px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); padding-bottom: 14px; border-bottom: 2px solid var(--ink); }
+
+  /* pilot timeline */
+  .phases { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 12px; margin-top: 56px; }
+  .phase { background: var(--panel); border-radius: 6px; padding: 24px 26px 28px; }
+  .phase.mid { background: var(--ink); color: var(--paper); }
+  .phase.mid .k, .phase.mid p { color: var(--paper); }
+  .phase .k { font-size: 14px; letter-spacing: .14em; text-transform: uppercase; color: var(--mid); }
+  .phase h3 { margin-top: 10px; }
+  .phase p { font-size: 21px; line-height: 1.4; color: var(--mid); }
+
+  /* metrics */
+  .metrics { margin-top: 40px; }
+  .metrics .row { display: grid; grid-template-columns: 1.4fr 1fr; gap: 48px; padding: 18px 0; border-bottom: 1px solid var(--rule); align-items: baseline; }
+  .metrics .row:first-child { border-top: 2px solid var(--ink); }
+  .metrics .row p { font-size: 24px; }
+  .metrics .row p + p { color: var(--mid); font-size: 20px; }
+
+  /* asks */
+  .asks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 64px; }
+  .ask .n { width: 64px; height: 64px; border-radius: 50%; border: 2px solid var(--ink); display: grid; place-items: center; font-size: 24px; margin-bottom: 28px; }
+  .ask:first-child .n { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .ask p { font-size: 23px; color: var(--mid); margin-top: 8px; }
+
+  /* notes */
+  aside.notes { display: none; }
+  body.show-notes .notes-panel { display: block; }
+  .notes-panel {
+    display: none; position: fixed; left: 0; right: 0; bottom: 0; max-height: 34vh; overflow: auto;
+    background: rgba(31,31,29,.94); color: #eeede8; font: 16px/1.55 var(--font); padding: 18px 28px 22px; z-index: 10;
+  }
+  .notes-panel b { color: var(--accent); font-weight: 500; letter-spacing: .1em; text-transform: uppercase; font-size: 12px; display: block; margin-bottom: 6px; }
+
+  /* progress indicator */
+  .progress { position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 8px; z-index: 5; }
+  .progress i { width: 7px; height: 7px; border-radius: 50%; background: #b9b6ae; cursor: pointer; }
+  .progress i.on { background: var(--accent); }
+  .hint { position: fixed; right: 16px; bottom: 10px; font: 12px var(--font); color: #8f8c84; letter-spacing: .05em; z-index: 5; }
+
+  /* print: one slide per page */
+  @media print {
+    @page { size: 1600px 900px; margin: 0; }
+    html, body { overflow: visible; height: auto; background: none; }
+    .stage { position: static; display: block; }
+    .deck { transform: none !important; width: 1600px; height: auto; }
+    .slide { position: relative; display: flex !important; width: 1600px; height: 900px; box-shadow: none; page-break-after: always; break-after: page; }
+    .progress, .hint, .notes-panel { display: none !important; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<div class="stage">
+<div class="deck" id="deck">
+
+<!-- 01 -->
+<section class="slide" data-label="Proposal · Event Modeling">
+  <div class="spacer"></div>
+  <h1>Fewer surprises<br>in delivery.</h1>
+  <p class="lead narrow mt-m">A shared picture for business and IT — and a small, reversible way to find out whether it helps us.</p>
+  <div class="spacer"></div>
+  <div class="grille"></div><div class="knob"></div>
+  <aside class="notes">Set the frame immediately: this is not a pitch for a methodology, it is a proposal to test whether a specific practice reduces problems we already have. Everything in this deck is meant to be questioned.</aside>
+</section>
+
+<!-- 02 -->
+<section class="slide" data-label="Starting point">
+  <h2>Let’s start with the problems,<br><span class="muted">not with a method.</span></h2>
+  <ul class="list mt-l">
+    <li><span class="n">01</span>Requirements become clear only after development has started.</li>
+    <li><span class="n">02</span>Business and IT read the same requirement — and mean different things.</li>
+    <li><span class="n">03</span>Modernization efforts grow unexpectedly once we look inside.</li>
+    <li><span class="n">04</span>Estimates get buffers because nobody fully trusts them.</li>
+    <li><span class="n">05</span>Projects deliver — but not quite what was expected.</li>
+  </ul>
+  <aside class="notes">Ask the room: which of these have we seen in the last twelve months? Let them pick. If none apply, the rest of the deck is unnecessary — say that openly. These are cost, schedule and capacity issues, not methodology issues.</aside>
+</section>
+
+<!-- 03 -->
+<section class="slide" data-label="Where it breaks">
+  <h2>Software rarely fails in the code.<br><span class="muted">It fails in translation.</span></h2>
+  <div class="chain">
+    <div class="step"><span class="k">Business</span><p>has an intent</p></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">Document</span><p>writes it down</p></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">Analysis</span><p>interprets it</p></div>
+    <div class="arrow">→</div>
+    <div class="step"><span class="k">Development</span><p>builds the interpretation</p></div>
+    <div class="arrow">→</div>
+    <div class="step bad"><span class="k">Test / Go-live</span><p>“That’s not what we meant.”</p></div>
+  </div>
+  <div class="costbar"><div style="height:14%"></div><div style="height:22%"></div><div style="height:36%"></div><div style="height:60%"></div><div style="height:100%"></div></div>
+  <div class="costlabel"><span>Cost of fixing a misunderstanding</span><span>found late</span></div>
+  <aside class="notes">Nobody in this chain is doing a bad job. Each hand-off is reasonable on its own; the loss accumulates. The later a misunderstanding surfaces, the more it costs. The goal: make misunderstandings visible on the left side of this picture.</aside>
+</section>
+
+<!-- 04 -->
+<section class="slide" data-label="The idea">
+  <div class="spacer"></div>
+  <p class="small" style="letter-spacing:.14em;text-transform:uppercase"><span class="dot"></span>In one sentence</p>
+  <h1 class="mt-s" style="font-size:84px;max-width:1300px">Business and IT review the same workflow — <span class="accent">before</span> we build it.</h1>
+  <p class="lead mt-m">Event Modeling is simply a disciplined way of drawing that workflow so that everyone can read it and nothing important is left implicit.</p>
+  <div class="spacer"></div>
+  <aside class="notes">This is the slide to remember. If someone only takes away one thing, it should be this sentence — not the name of the method.</aside>
+</section>
+
+<!-- 05 -->
+<section class="slide" data-label="What it looks like">
+  <h2>A storyline of the system,<br><span class="muted">read from left to right.</span></h2>
+  <div class="model">
+    <div class="lane">What people see</div>
+    <div class="chip ui">Leave request form</div>
+    <div class="empty"></div>
+    <div class="chip ui">Manager inbox</div>
+    <div class="empty"></div>
+    <div class="chip ui">Team calendar</div>
+
+    <div class="lane">What they do</div>
+    <div class="chip cmd">Request leave</div>
+    <div class="empty"></div>
+    <div class="chip cmd">Approve request</div>
+    <div class="empty"></div>
+    <div class="empty"></div>
+
+    <div class="lane">What happened</div>
+    <div class="empty"></div>
+    <div class="chip evt">Leave requested</div>
+    <div class="empty"></div>
+    <div class="chip evt">Leave approved</div>
+    <div class="empty"></div>
+
+    <div class="lane">What we show back</div>
+    <div class="empty"></div>
+    <div class="empty"></div>
+    <div class="chip view">Open requests</div>
+    <div class="empty"></div>
+    <div class="chip view">Who is away</div>
+
+    <div></div><div class="timeline"></div>
+  </div>
+  <p class="small mt-m">Each column is a step someone can point at and ask: “Is this right? What happens if the manager rejects?” — before a single line of code exists.</p>
+  <aside class="notes">Deliberately a non-IT example. No notation lecture needed: screens, actions, facts, information shown back. Business people can read this after thirty seconds. The interesting conversation is about the gaps: rejection, cancellation, overlapping requests.</aside>
+</section>
+
+<!-- 06 -->
+<section class="slide" data-label="One picture, four readers">
+  <h2>Everyone reads the same story —<br><span class="muted">for their own purpose.</span></h2>
+  <div class="readers">
+    <div class="reader hl"><div class="icon">B</div><span class="sees">Business expert sees</span><p>the process, in their own words</p></div>
+    <div class="reader"><div class="icon">D</div><span class="sees">Developer sees</span><p>concrete, independent pieces of work</p></div>
+    <div class="reader"><div class="icon">T</div><span class="sees">Tester sees</span><p>behaviour that has to be verified</p></div>
+    <div class="reader"><div class="icon">A</div><span class="sees">Architect sees</span><p>dependencies and how information flows</p></div>
+  </div>
+  <p class="oneline">No separate documents to keep in sync. Fewer translations, fewer places for meaning to get lost.</p>
+  <aside class="notes">Today each role tends to own its own artefact: requirements doc, tickets, test plan, architecture diagram. They drift. Here they point at the same thing.</aside>
+</section>
+
+<!-- 07 -->
+<section class="slide" data-label="What leadership gets">
+  <h2>Outcomes you can evaluate.</h2>
+  <div class="grid g2 mt-l" style="row-gap:48px">
+    <div class="cell"><span class="k">Clearer requirements</span><p>Gaps and contradictions surface in a workshop, not in a sprint review.</p></div>
+    <div class="cell"><span class="k">Less rework</span><p>Misunderstandings are fixed on a whiteboard, where they are cheap.</p></div>
+    <div class="cell"><span class="k">Honest progress</span><p>Reported as working business behaviour, not as percentages.</p></div>
+    <div class="cell"><span class="k">Fewer surprises</span><p>Scope is visible up front — including the parts nobody mentioned.</p></div>
+  </div>
+  <aside class="notes">None of these require leadership to understand the notation. They are things we can observe and, to a reasonable degree, measure — see the pilot slide.</aside>
+</section>
+
+<!-- 08 -->
+<section class="slide" data-label="Progress, concretely">
+  <h2>From “almost done”<br><span class="muted">to “this part works — try it.”</span></h2>
+  <div class="compare">
+    <div>
+      <p class="small" style="letter-spacing:.14em;text-transform:uppercase">Today</p>
+      <div class="big mt-s">72 %</div>
+      <p class="small mt-s">Of what? Which 28 % are missing — and are they the hard ones?</p>
+    </div>
+    <div class="sep"></div>
+    <div>
+      <p class="small" style="letter-spacing:.14em;text-transform:uppercase">With slices</p>
+      <div class="squares mt-s">
+        <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i>
+        <i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <p style="font-size:30px">9 of 14 workflow steps work end to end.</p>
+      <p class="small mt-s">The remaining 5 are named, sized and visible on the same picture.</p>
+    </div>
+  </div>
+  <aside class="notes">A slice is one column of the storyline: one thing a user can do and see. Done means demonstrable. This can run alongside existing status reporting — it does not have to replace it.</aside>
+</section>
+
+<!-- 09 -->
+<section class="slide" data-label="Fits the company we have">
+  <h2>Most things stay exactly as they are.</h2>
+  <table class="table">
+    <tr><th>Area</th><th>Stays</th><th>Changes</th></tr>
+    <tr><td>Budgeting</td><td>Same process, same owners</td><td>Estimates rest on a visible list of steps</td></tr>
+    <tr><td>Planning</td><td>Roadmaps, milestones, deadlines</td><td>Milestones can be expressed as sets of slices</td></tr>
+    <tr><td>Governance</td><td>Approvals, reviews, compliance</td><td>Reviews look at the workflow, not only at text</td></tr>
+    <tr><td>Reporting</td><td>Existing status formats</td><td>Optionally: slices done / open, as an addition</td></tr>
+    <tr><td>Business time</td><td>—</td><td>A few hours of focused workshop time early on</td></tr>
+  </table>
+  <aside class="notes">The article this is based on makes the point well: organizations will not stop budgeting, planning or asking when things are done — and they shouldn’t. The goal is not to make leadership think like developers.</aside>
+</section>
+
+<!-- 10 -->
+<section class="slide" data-label="To be fair">
+  <h2>What this is not.</h2>
+  <div class="myth">
+    <div class="hd">What it can sound like</div><div class="hd">What it actually is</div>
+    <div class="q">Another diagramming exercise</div><div class="a">A working agreement about behaviour, used to plan, build and test</div>
+    <div class="q">The team has abandoned planning</div><div class="a">Planning in smaller, verifiable steps that add up to the same milestones</div>
+    <div class="q">A database rewrite</div><div class="a">A way of describing requirements; technical choices stay separate decisions</div>
+    <div class="q">The new silver bullet</div><div class="a">One useful tool. It helps most where workflows are complex or unclear</div>
+  </div>
+  <aside class="notes">Address misunderstandings before they travel up the management chain. If Event Sourcing comes up: it pairs well with Event Modeling, but it is an implementation option, not a prerequisite, and not part of this proposal.</aside>
+</section>
+
+<!-- 11 -->
+<section class="slide" data-label="Costs and risks">
+  <h2>It isn’t free.<br><span class="muted">Here is what it costs.</span></h2>
+  <div class="grid g3 mt-l">
+    <div class="cell"><span class="k">Time up front</span><p>Workshops before building. Feels slower in week one; the bet is that it is faster by week six.</p></div>
+    <div class="cell"><span class="k">Business availability</span><p>Without a domain expert in the room, the model is just our guess — drawn nicely.</p></div>
+    <div class="cell"><span class="k">Keeping it current</span><p>A model nobody updates becomes another outdated document. It needs an owner.</p></div>
+  </div>
+  <p class="small mt-l">If the pilot shows these costs outweigh the benefits for us, we stop. That is a valid result.</p>
+  <aside class="notes">Being explicit about costs is what makes the rest credible. Also mention the learning curve: small for readers, a few weeks for the people facilitating.</aside>
+</section>
+
+<!-- 12 -->
+<section class="slide" data-label="Proposal">
+  <h2>A small, bounded pilot.</h2>
+  <div class="phases">
+    <div class="phase"><span class="k">Weeks 1–2</span><h3>Model together</h3><p>Two or three workshops with business, development and test on one real feature.</p></div>
+    <div class="phase mid"><span class="k">Weeks 3–7</span><h3>Build slice by slice</h3><p>Deliver and demo working steps. Report progress as slices — next to the usual status, not instead of it.</p></div>
+    <div class="phase"><span class="k">Week 8</span><h3>Review honestly</h3><p>Compare against the agreed signals. Continue, adjust or stop.</p></div>
+  </div>
+  <p class="small mt-l">One team · one feature with real business complexity · no change to budget or governance.</p>
+  <aside class="notes">Pick a feature where misunderstanding is likely — not a trivial one (proves nothing) and not the most critical project of the year (too much pressure). Timeline is a suggestion; adjust to our sprint rhythm.</aside>
+</section>
+
+<!-- 13 -->
+<section class="slide" data-label="How we’ll know">
+  <h2>We agree on the signals<br><span class="muted">before we start.</span></h2>
+  <div class="metrics">
+    <div class="row"><p>Open questions found before vs. after development starts</p><p>Should shift left</p></div>
+    <div class="row"><p>Clarification meetings during implementation</p><p>Should go down</p></div>
+    <div class="row"><p>Rework and reopened tickets after review</p><p>Should go down</p></div>
+    <div class="row"><p>Business can review the workflow without IT translating</p><p>Ask them</p></div>
+    <div class="row"><p>Estimate vs. actual, per slice</p><p>Should become steadier</p></div>
+  </div>
+  <aside class="notes">Compare with a similar recent feature as a baseline. Write the result down either way — if it works, the improvement must be traceable to the practice, not attributed to a strong engineer or luck.</aside>
+</section>
+
+<!-- 14 -->
+<section class="slide" data-label="What I’m asking for">
+  <h2>Three things.</h2>
+  <div class="asks">
+    <div class="ask"><div class="n">1</div><h3>A business expert</h3><p>Two to three hours a week, mostly in the first two weeks.</p></div>
+    <div class="ask"><div class="n">2</div><h3>Room to report differently</h3><p>Progress in slices, alongside the existing reporting.</p></div>
+    <div class="ask"><div class="n">3</div><h3>A review date</h3><p>Eight weeks from start. We decide together, based on the signals.</p></div>
+  </div>
+  <aside class="notes">Keep the ask small and concrete. No headcount, no tooling budget, no reorganization.</aside>
+</section>
+
+<!-- 15 -->
+<section class="slide" data-label="Closing">
+  <div class="spacer"></div>
+  <h1 style="font-size:96px">Less, but better.</h1>
+  <p class="lead narrow mt-m">Fewer documents, fewer translations, fewer surprises —<br>and one picture everyone can point at.</p>
+  <p class="small mt-l">Questions, doubts and counter-proposals are welcome.</p>
+  <div class="spacer"></div>
+  <div class="grille"></div><div class="knob"></div>
+  <aside class="notes">“Weniger, aber besser” — Dieter Rams. Close by inviting objections; the strongest objections are the best input for designing the pilot.</aside>
+</section>
+
+</div>
+</div>
+
+<div class="progress" id="progress"></div>
+<div class="hint">← → navigate · N notes · F fullscreen</div>
+<div class="notes-panel" id="notesPanel"></div>
+
+<script>
+(function () {
+  const deck = document.getElementById('deck');
+  const slides = Array.from(deck.querySelectorAll('.slide'));
+  const progress = document.getElementById('progress');
+  const notesPanel = document.getElementById('notesPanel');
+  const total = slides.length;
+  const pad = n => String(n).padStart(2, '0');
+
+  slides.forEach((s, i) => {
+    const num = document.createElement('div');
+    num.className = 'num'; num.textContent = pad(i + 1) + ' / ' + pad(total);
+    s.appendChild(num);
+    const foot = document.createElement('div');
+    foot.className = 'foot';
+    foot.innerHTML = '<span><span class="dot" style="width:7px;height:7px"></span>Event Modeling beyond the development team</span><span>Based on “Event Modeling Has to Work Beyond the Development Team”, Adaptech Group, 2026</span>';
+    if (i > 0 && i < total - 1) s.appendChild(foot);
+    const d = document.createElement('i');
+    d.addEventListener('click', () => go(i));
+    progress.appendChild(d);
+  });
+
+  let cur = Math.min(Math.max(parseInt(location.hash.slice(1), 10) - 1 || 0, 0), total - 1);
+  function go(i) {
+    cur = Math.min(Math.max(i, 0), total - 1);
+    slides.forEach((s, j) => s.classList.toggle('active', j === cur));
+    Array.from(progress.children).forEach((d, j) => d.classList.toggle('on', j === cur));
+    const n = slides[cur].querySelector('aside.notes');
+    notesPanel.innerHTML = '<b>Notes · ' + pad(cur + 1) + '</b>' + (n ? n.innerHTML : '—');
+    history.replaceState(null, '', '#' + (cur + 1));
+  }
+  function fit() {
+    const s = Math.min(window.innerWidth / 1600, window.innerHeight / 900) * 0.96;
+    deck.style.transform = 'scale(' + s + ')';
+  }
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight', 'PageDown', ' ', 'Enter'].includes(e.key)) { e.preventDefault(); go(cur + 1); }
+    else if (['ArrowLeft', 'PageUp', 'Backspace'].includes(e.key)) { e.preventDefault(); go(cur - 1); }
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(total - 1);
+    else if (e.key === 'n' || e.key === 'N') document.body.classList.toggle('show-notes');
+    else if (e.key === 'f' || e.key === 'F') {
+      if (!document.fullscreenElement) document.documentElement.requestFullscreen?.(); else document.exitFullscreen?.();
+    }
+  });
+  let x0 = null;
+  document.addEventListener('touchstart', e => { x0 = e.touches[0].clientX; }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 40) go(cur + (dx < 0 ? 1 : -1));
+    x0 = null;
+  });
+  window.addEventListener('resize', fit);
+  fit(); go(cur);
+})();
+</script>
+</body>
+</html>
