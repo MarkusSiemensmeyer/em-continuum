@@ -137,6 +137,19 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <!-- slices/blueprint is the build kit's reference context: compiled and tested in every
+                 build, runnable via spring-boot:run / the IDE, but never shipped. Excluded from the
+                 plain jar, which spring-boot:repackage turns into the executable one.
+                 BlueprintIsolationTest keeps production code from depending on it. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>io/continuum/slices/blueprint/**</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
             <!-- Jackson 3 only: fail the build if anything drags Jackson 2 (com.fasterxml.jackson.*)
                  back onto the classpath transitively. Spring Boot 4 still manages a Jackson 2 BOM
                  for projects that need both, so without this the mistake would be silent. -->
