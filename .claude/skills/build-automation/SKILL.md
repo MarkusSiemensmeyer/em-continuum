@@ -3,35 +3,53 @@ name: build-automation
 authors:
   - Martin Dilger
 description: >
-  Implement automation slices (Event → Command) that react to events off the shared
-  EventDispatcher subscription and dispatch a command by calling its command handler directly, in
-  this project's one established pattern. Automations can be stateless (direct event-to-command
-  mapping) or carry a private read model (to look up data needed for command construction). Use
-  when implementing a new automation / event-to-command reactor from a slice.json event model in
-  this project. There is exactly one supported style — do not offer alternatives.
+  Implement automation slices (Event → Command) in this project's one established pattern,
+  Functional Core / Imperative Shell: pure funcore Policy (react: trigger event → list of commands)
+  → @Component Processor as imperative shell (SliceEventListener off the shared EventDispatcher:
+  decode, ask the policy, dispatch into the target slice's CommandHandler) →
+  funcore/{AutomationName}Specification (one test per board GWT, against the pure policy) + a shell
+  test wired to the real target shells on InMemoryUmaDbClient. Automations can be stateless or keep
+  a private read model. Also covers TRANSLATION slices - inbound (external message → our command)
+  and outbound (our event → external system, recorded as a fact). Use when implementing a new
+  automation / event-to-command reactor or a translation from a slice.json event model in this project. There is exactly one supported style — do not offer
+  alternatives.
 ---
 
-# UmaDB — Automation Slice
+# UmaDB — Automation Slice (Functional Core / Imperative Shell)
 
-An automation reacts to an event by dispatching a command. In Event Modeling: the **orange**
-stripe. There are two kinds:
+An automation reacts to an event by dispatching a command — the **orange** stripe in Event
+Modeling. Grounded in two verified references, compiled and passing under `mvn test` including
+the architecture tests:
 
-- **Stateless**: direct event-to-command mapping — no stored state needed. Grounded in the
-  `AutoSubscribeToDefaultCourseProcessor` slice (test in
-  `AutoSubscribeToDefaultCourseProcessorTest`) — verified, compiled and passing under `mvn test`,
-  including end-to-end against a real `umadb/umadb:0.7.5` server (`UmaDbContainerIntegrationTest`):
-  a real `CustomerRegistered` event, delivered by the real `EventDispatcher` subscription, really
-  causes a real `SubscribeToCourse` command to be handled and its event really appended.
-- **With private read model**: needs data NOT in the trigger event itself (e.g. iterating over all
-  entities matching a category). Same shape as `build-state-change`'s Decision-with-fold pattern,
-  applied to a private in-memory model instead of a Query/replay — documented below by direct
-  analogy, not separately proven against a compiled example in this session; verify it compiles and
-  its tests pass before considering it done, the same as any other slice.
+- **stateless** — `slices/blueprint/automation/activateregistereditem/` (ItemRegistered → ActivateItem)
+- **with a private read model ("todo list")** — `slices/blueprint/automation/activateitemsatopenedlocation/`
+  (ItemRegistered/ItemActivated keep the list, LocationOpened → ActivateItem per pending item)
+ **When in doubt, open the blueprint file of the same name and copy its shape.**
 
-There is no separate command-bus abstraction in this project (unlike Axon's
-`CommandDispatcher`/`CommandGateway` split) — an automation dispatches by calling the target
-command handler's `handle(...)` method directly, since it's just another Spring bean and the call
-is in-process either way.
+## The shape — read this first
+
+```
+.../slices/{context}/automation/{slicename}/
+├── {AutomationName}Processor.java    ← IMPERATIVE SHELL: decode, dispatch (SliceEventListener)
+└── funcore/
+    └── {AutomationName}Policy.java   ← FUNCTIONAL CORE: react(trigger) → List<Command>, pure
+src/test/java/.../slices/{context}/automation/{slicename}/
+├── {AutomationName}ProcessorTest.java     ← shell wired to the REAL target shell(s), in-memory store
+└── funcore/
+    └── {AutomationName}Specification.java ← the board's GWTs + storyline beats, against the policy
+```
+
+- **The policy decides WHETHER and WHICH commands** — pure, returns a `List` (empty = nothing).
+- **The processor does the I/O**: decodes the raw event, calls the policy, dispatches each command
+  into the target slice's **imperative shell** (`{TargetCommand}CommandHandler.handle`).
+- **No retry in the processor** — the target shell already retries its own conflicts.
+- **No idempotency guard in the processor** — `EventDispatcher` replays from position 0 on every
+  start; the target slice's core must turn a repeated command into `List.of()` (see
+  `ActivateItemDecision`). If it doesn't, fix the target's core rather than guarding here.
+- **The policy (`funcore/`) is pure** — `FunctionalCoreTest` fails the build otherwise.
+
+There is no command bus: the processor calls the target command handler directly — it's a Spring
+bean, in-process either way.
 
 ## Step 0: Discover Target Project Conventions
 
@@ -39,65 +57,93 @@ is in-process either way.
 > and a `description` field — use them as implementation hints, and resolve consumed comments via
 > `POST <BASE_URL>/api/org/<ORG_ID>/boards/<BOARD_ID>/nodes/<nodeId>/comments/<commentId>/resolve`.
 
-Read the target project's `.build-kit/CLAUDE.md` and explore existing slices.
-
-**Determine `{basePackage}`** — every path below is rooted at
-`{basePackage}.slices.{context}.automation.{slicename}`. Resolve `{basePackage}` as documented in
-`.build-kit/CLAUDE.md`.
+Read the target project's `.build-kit/CLAUDE.md` and the blueprint automation. Every path below is
+rooted at `{basePackage}.slices.{context}.automation.{slicename}`; resolve `{basePackage}` as
+documented in `.build-kit/CLAUDE.md`.
 
 ## Step 1: Understand the Input
 
-Extract these elements from slice.json (or whatever Event Modeling artifact is given):
+| Element | What to extract from slice.json |
+|---|---|
+| **Trigger event** | which event triggers the automation, and which condition filters it |
+| **Target command** | which command to dispatch, with what properties |
+| **Mapping logic** | how event properties map to command properties |
+| **Read model needed?** | does the automation need data NOT in the trigger event itself? |
 
-| Element                | What to extract                                                        |
-|-------------------------|-------------------------------------------------------------------------|
-| **Trigger event**      | Which event triggers the automation, and which condition filters it     |
-| **Target command**     | Which command to dispatch, with what properties                         |
-| **Mapping logic**      | How event properties map to command properties                          |
-| **Read model needed?** | Does the automation need data NOT in the trigger event itself?          |
-
-If the slice details include `## Scenarios (GWTs)`, use them to derive test cases. GWT format for
-automations: `Given (events) → Then (command | NOTHING)`. Events in Given include read-model-
-building events first, trigger event last.
-
-`slice.json` may also carry an optional `storylines[]` array — see the "Storyline-Derived Tests"
-section under Step 4 for how a trigger-event beat in one of these can add a supplementary test.
+GWT format for automations: `Given (events) → Then (command | NOTHING)` — setup events first,
+trigger last. `storylines[]` (optional) → Step 6b.
 
 **If requirements are unclear, invoke `/request-feedback` rather than guessing** — see
 `.build-kit/CLAUDE.md`'s escalation rule.
 
-## Step 2: Ensure Events Exist
+## Step 2: Ensure Events and the Target Slice Exist
 
-All events the automation reacts to, and the target command it dispatches, must already exist. If
-they don't, create the event first following `build-state-change` Step 2, and the target command's
-whole slice following `build-state-change` in full (a command never exists without its slice).
+The trigger event(s) and the target command's whole slice must exist — create them first with
+`build-state-change` if not (a command never exists without its slice).
 
-## Step 3: Implement the Automation
+**Trigger event from another context?** Import it only from that context's `events` package — its
+Spring Modulith named interface. Anything else of another context is internal, and `ModularityTest`
+fails the build. Dispatching into another context's command handler is not allowed either: react
+in your own context with your own command instead.
 
-### Stateless Automation
+## Step 3: Functional core — `funcore/{AutomationName}Policy`
 
-New automation slices live under `src/main/java/.../slices/{context}/automation/{slicename}/`.
+```java
+package {basePackage}.slices.{context}.automation.{slicename}.funcore;
+
+import {basePackage}.slices.{context}.events.{TriggerEvent};
+import {basePackage}.slices.{context}.{targetslicename}.{TargetCommand}Command;
+
+import java.util.List;
+
+/**
+ * <b>Functional core</b> of the {AutomationName} automation: pure event-to-command mapping.
+ * Decides WHETHER to react and WHICH commands to send - an empty list means "nothing". Dispatching
+ * them is the shell's job ({@code {AutomationName}Processor}).
+ */
+public final class {AutomationName}Policy {
+
+    private {AutomationName}Policy() {
+    }
+
+    public static List<{TargetCommand}Command> react({TriggerEvent} event) {
+        if (!<condition from slice.json>) {
+            return List.of();
+        }
+        return List.of(new {TargetCommand}Command(event.field1() /*, mapped fields */));
+    }
+}
+```
+
+No condition in slice.json → no `if`; never invent one.
+
+## Step 4: Imperative shell — `{AutomationName}Processor`
 
 ```java
 package {basePackage}.slices.{context}.automation.{slicename};
 
-import io.umadb.client.Event;
-import {basePackage}.eventstore.EventCodec;
 import {basePackage}.eventstore.SliceEventListener;
+import {basePackage}.slices.{context}.automation.{slicename}.funcore.{AutomationName}Policy;
+import {basePackage}.slices.{context}.events.{Context}Events;
 import {basePackage}.slices.{context}.events.{TriggerEvent};
-import {basePackage}.slices.{context}.{targetslicename}.{TargetCommand}Command;
 import {basePackage}.slices.{context}.{targetslicename}.{TargetCommand}CommandHandler;
+import io.umadb.client.Event;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+/**
+ * <b>Imperative shell</b> of the {AutomationName} automation: decodes the raw trigger event (I/O),
+ * asks the pure {@link {AutomationName}Policy} what to do, and dispatches the resulting commands
+ * into the target slice's own imperative shell - which retries its own conflicts.
+ */
 @Component
 @ConditionalOnProperty(prefix = "slices.{context}.automation", name = "{slicename}.enabled")
 public class {AutomationName}Processor implements SliceEventListener {
 
-    private final {TargetCommand}CommandHandler targetCommandHandler;
+    private final {TargetCommand}CommandHandler {targetCommand};
 
-    public {AutomationName}Processor({TargetCommand}CommandHandler targetCommandHandler) {
-        this.targetCommandHandler = targetCommandHandler;
+    public {AutomationName}Processor({TargetCommand}CommandHandler {targetCommand}) {
+        this.{targetCommand} = {targetCommand};
     }
 
     @Override
@@ -107,207 +153,290 @@ public class {AutomationName}Processor implements SliceEventListener {
 
     @Override
     public void onEvent(Event event) {
-        react(EventCodec.fromEvent(event, {TriggerEvent}.class));
-    }
+        // 1. allocate the functional core's input (I/O)
+        var trigger = ({TriggerEvent}) {Context}Events.MAPPING.decode(event);
 
-    /** Called directly (no client, no dispatcher) by this class's own test - see Step 4. */
-    public void react({TriggerEvent} event) {
-        if (!shouldReact(event)) {
-            return;
-        }
-        targetCommandHandler.handle(new {TargetCommand}Command(event.field1() /*, mapped fields */));
-    }
+        // 2. functional core (pure)
+        var commands = {AutomationName}Policy.react(trigger);
 
-    private boolean shouldReact({TriggerEvent} event) {
-        return true; // replace with the actual condition from slice.json, if any
+        // 3. dispatch the outcome into the target slice's imperative shell
+        commands.forEach({targetCommand}::handle);
     }
 }
 ```
 
-**Idempotency**: `EventDispatcher` may redeliver a trigger event after an application restart (see
-its Javadoc on quickstart-level checkpointing) — a re-dispatched command is safe as long as the
-target command handler's own Decision already no-ops a repeat (verified: re-subscribing to the same
-course a second time is rejected by `SubscribeToCourseDecision.alreadySubscribedToThisCourse`, not
-by anything in the automation itself). Don't add your own idempotency guard in the automation
-unless the target command handler genuinely can't provide one — check that first.
+`EventDispatcher` calls `supports`/`onEvent` sequentially on its one subscription thread. A
+`CommandRejectedException` from the target shell is logged by the dispatcher and the next event
+continues.
 
-### Automation with Read Model
+### With a private read model ("todo list")
 
-When the automation needs data not in the trigger event, add a private in-memory model — never
-reuse another slice's read model.
+When the policy needs data NOT in the trigger event, the read model becomes part of the core: an
+immutable record plus **two** pure functions over the context's event type — `evolve` (setup
+events change the model) and `react` (the trigger reads it). Verified shape,
+`ActivateItemsAtOpenedLocationPolicy`:
 
 ```java
-@Component
-@ConditionalOnProperty(prefix = "slices.{context}.automation", name = "{slicename}.enabled")
-public class {AutomationName}Processor implements SliceEventListener {
+public final class {AutomationName}Policy {
 
-    // Private read model, indexed by entity id - belongs to this automation only
-    private final Map<String, {AutomationName}Entry> store = new ConcurrentHashMap<>();
+    /** The private read model. Immutable - evolve returns a new one. */
+    public record TodoList(Map<String, String> pending) {
 
-    private final {TargetCommand}CommandHandler targetCommandHandler;
+        public static final TodoList EMPTY = new TodoList(Map.of());
 
-    public {AutomationName}Processor({TargetCommand}CommandHandler targetCommandHandler) {
-        this.targetCommandHandler = targetCommandHandler;
-    }
-
-    @Override
-    public boolean supports(String eventType) {
-        return {SetupEvent}.TYPE.equals(eventType) || {TriggerEvent}.TYPE.equals(eventType);
-    }
-
-    @Override
-    public void onEvent(Event event) {
-        if (event.type().equals({SetupEvent}.TYPE)) {
-            onSetup(EventCodec.fromEvent(event, {SetupEvent}.class));
-        } else if (event.type().equals({TriggerEvent}.TYPE)) {
-            react(EventCodec.fromEvent(event, {TriggerEvent}.class));
+        public TodoList {
+            pending = Map.copyOf(pending);
         }
+
+        TodoList with(String id, String value) { /* copy, put, new TodoList */ }
+        TodoList without(String id) { /* copy, remove, new TodoList */ }
     }
 
-    // Phase 1 - build the private read model from setup events
-    public void onSetup({SetupEvent} event) {
-        store.put(event.entityId(), new {AutomationName}Entry(event.entityId(), event.filterField()));
+    public static TodoList evolve(TodoList todoList, {Context}Event event) {
+        return switch (event) {
+            case {SetupEvent} e -> todoList.with(e.entityId(), e.filterField());
+            case {DoneEvent} e -> todoList.without(e.entityId());      // work that's done leaves the list
+            default -> todoList;
+        };
     }
 
-    // Phase 2 - trigger: dispatch a command per matching entry
-    public void react({TriggerEvent} event) {
-        store.values().stream()
-                .filter(entry -> entry.filterField().equals(event.filterValue()))
-                .forEach(entry -> targetCommandHandler.handle(new {TargetCommand}Command(entry.entityId() /*, other fields */)));
+    public static List<{TargetCommand}Command> react(TodoList todoList, {Context}Event event) {
+        return switch (event) {
+            case {TriggerEvent} e -> todoList.pending().entrySet().stream()
+                    .filter(entry -> entry.getValue().equals(e.filterValue()))
+                    .map(Map.Entry::getKey)
+                    .sorted()                                           // deterministic order
+                    .map({TargetCommand}Command::new)
+                    .toList();
+            default -> List.of();
+        };
     }
-
-    record {AutomationName}Entry(String entityId, String filterField) {}
 }
 ```
 
-Key rules:
-
-- **Two branches in one `onEvent`**: one builds the private model (`onSetup`), one reacts
-  (`react`) — `supports` must answer true for both event types.
-- Since `EventDispatcher` delivers events sequentially in position order to every listener on a
-  single subscription thread (see its Javadoc), there is no concurrent-mutation race between
-  `onSetup` and `react` to guard against here the way a multi-threaded processing group would need
-  to — `ConcurrentHashMap` is a safety margin, not a requirement.
-- **Private read model belongs to this automation only** — never share it with another slice.
-
-## Step 4: Implement Tests
-
-**Stateless automations** — pure unit test with a mocked target command handler (Mockito):
+The processor holds the current model and, per event, first reacts, then folds:
 
 ```java
-package {basePackage}.slices.{context}.automation.{slicename};
+private volatile TodoList todoList = TodoList.EMPTY;
+
+@Override
+public boolean supports(String eventType) {       // setup, done AND trigger types
+    return {SetupEvent}.TYPE.equals(eventType) || {DoneEvent}.TYPE.equals(eventType) || {TriggerEvent}.TYPE.equals(eventType);
+}
+
+@Override
+public void onEvent(Event event) {
+    // 1. allocate the functional core's input (I/O) - the todo list is this shell's own state
+    var domainEvent = {Context}Events.MAPPING.decode(event);
+
+    // 2. functional core (pure): react to the event as a trigger, fold it in as a fact
+    var commands = {AutomationName}Policy.react(todoList, domainEvent);
+    todoList = {AutomationName}Policy.evolve(todoList, domainEvent);
+
+    // 3. dispatch the outcome into the target slice's imperative shell
+    commands.forEach({targetCommand}::handle);
+}
+```
+
+- The model is **private** to this automation — never reuse another slice's read model.
+- It lives **in memory only**: the dispatcher replays from position 0 on every start and rebuilds
+  it. Commands re-dispatched during that replay must be no-ops in the target slice's core.
+- Remove finished work from the list (a "done" event) whenever slice.json models one — otherwise
+  the list only grows, and replays re-dispatch more and more commands.
+
+## Step 5: Feature flag
+
+`@ConditionalOnProperty(prefix = "slices.{context}.automation", name = "{slicename}.enabled")` on the
+processor only — never on `funcore/`. Wire `...automation.{slicename}.enabled=true` in
+`src/main/resources/application.properties` and `=false` in `src/test/resources/application.properties`.
+See [references/feature-flag-patterns.md](references/feature-flag-patterns.md).
+
+## Step 6: Specification — `funcore/{AutomationName}Specification` (the board's GWTs)
+
+**One test method per `specifications[]` entry**, `@DisplayName` = the spec's title, written with
+the shared `AutomationSpecification` DSL (`testsupport/spec/`) against the pure policy:
+
+```java
+package {basePackage}.slices.{context}.automation.{slicename}.funcore;
 
 import {basePackage}.slices.{context}.events.{TriggerEvent};
 import {basePackage}.slices.{context}.{targetslicename}.{TargetCommand}Command;
-import {basePackage}.slices.{context}.{targetslicename}.{TargetCommand}CommandHandler;
-import org.junit.jupiter.api.BeforeEach;
+import {basePackage}.testsupport.spec.AutomationSpecification;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
+/** {AutomationName} - the board's specifications, one test each, run against the pure policy. */
+class {AutomationName}Specification {
 
-@ExtendWith(MockitoExtension.class)
-class {AutomationName}ProcessorTest {
+    private static final AutomationSpecification<{TriggerEvent}, {TargetCommand}Command> SPEC =
+            AutomationSpecification.of({AutomationName}Policy::react);
 
-    @Mock
-    private {TargetCommand}CommandHandler targetCommandHandler;
-
-    private {AutomationName}Processor processor;
-
-    @BeforeEach
-    void setUp() {
-        processor = new {AutomationName}Processor(targetCommandHandler);
+    @Test
+    @DisplayName("{spec title from slice.json}")
+    void conditionMet() {
+        SPEC.given(new {TriggerEvent}("entity-1" /*, fields that meet the condition */))
+                .then(new {TargetCommand}Command("entity-1"));
     }
 
     @Test
-    @DisplayName("given trigger event with condition met, then command dispatched")
-    void happyPath() {
-        processor.react(new {TriggerEvent}("entity-1" /*, fields that meet condition */));
-
-        verify(targetCommandHandler).handle(new {TargetCommand}Command("entity-1" /*, expected fields */));
-    }
-
-    @Test
-    @DisplayName("given trigger event with condition not met, then no command dispatched")
+    @DisplayName("{spec title from slice.json}")
     void conditionNotMet() {
-        processor.react(new {TriggerEvent}("entity-1" /*, fields that do NOT meet condition */));
-
-        verifyNoInteractions(targetCommandHandler);
+        SPEC.given(new {TriggerEvent}("entity-1" /*, fields that do NOT meet it */))
+                .thenNothing();
     }
 }
 ```
 
-If Mockito's inline mock maker reports a Byte Buddy / JDK-version incompatibility when mocking a
-project class (seen on very recent JDKs, harmless), add
-`-Dnet.bytebuddy.experimental=true` to the surefire `<argLine>` in `pom.xml` — this affects only
-Mockito's own bytecode generation, not the code under test.
+| GWT element | DSL |
+|---|---|
+| Given trigger event | `SPEC.given(triggerEvent)` |
+| Then command(s) | `.then(command1, ...)` — exact commands, exact order |
+| Then NOTHING | `.thenNothing()` |
 
-**Automations with read model** — call `onSetup`/`react` directly, same mocked-handler style, setup
-events before trigger events:
+**With a private read model** use `ReadModelAutomationSpecification` — exactly the board's
+format: setup events first, **the last given event is the trigger**:
 
 ```java
-processor.onSetup(new {SetupEvent}("entity-1", "filter-A"));
-processor.onSetup(new {SetupEvent}("entity-2", "filter-B"));
+private static final ReadModelAutomationSpecification<TodoList, {Context}Event, {TargetCommand}Command> SPEC =
+        ReadModelAutomationSpecification.of(TodoList.EMPTY, {AutomationName}Policy::evolve, {AutomationName}Policy::react);
 
-processor.react(new {TriggerEvent}("filter-A"));
-
-verify(targetCommandHandler).handle(new {TargetCommand}Command("entity-1" /*, fields */));
-verifyNoMoreInteractions(targetCommandHandler);
+@Test
+@DisplayName("{spec title from slice.json}")
+void matchingEntriesOnly() {
+    SPEC.given(
+                    new {SetupEvent}("entity-2", "filter-A"),
+                    new {SetupEvent}("entity-3", "filter-B"),
+                    new {TriggerEvent}("filter-A"))                 // trigger last
+            .then(new {TargetCommand}Command("entity-2"));
+}
 ```
 
-### Test Cases to Cover
+Cover at least (see `ActivateItemsAtOpenedLocationSpecification`):
+1. matching filter → commands for matching entries only
+2. no matching entry → `.thenNothing()`
+3. finished work (a "done" event before the trigger) → not dispatched again
+4. setup after the trigger doesn't count — `given(trigger, setup)`: the last event is then a setup
+   event, and `react` returns nothing for it
 
-**Stateless automations:**
-1. Condition met → expected command dispatched
-2. Condition not met → no command dispatched
+## Step 6b: Storyline beats (optional, only if `storylines[]` is present)
 
-**Automations with read model:**
-1. Setup + trigger with matching filter → command dispatched for matching entries only
-2. Setup + trigger with non-matching filter → no command dispatched
-3. Temporal ordering: setup before trigger vs. setup after trigger → only entries that existed at
-   trigger time receive a command
+Beats live once per storyline in `src/test/java/<basePackage>/slices/{context}/{StorylineTitle}Storyline.java`
+(create or extend it — see `build-state-change` Step 7b and `blueprint/ItemLifecycleStoryline`).
+For every `EVENT` beat directly followed by a `COMMAND` beat this automation dispatches, add a test
+to a `@Nested @DisplayName("Storyline: " + {StorylineTitle}Storyline.TITLE) class {StorylineTitle}` in the
+specification — one nested class per storyline, beats referenced qualified (`{StorylineTitle}Storyline.BEAT`),
+never via a wildcard static import (several storylines define the same names):
 
-### Mapping GWT Scenarios to Tests
+```java
+@Test
+@DisplayName("2 → 4: {TriggerEvent} triggers {TargetCommand}")
+void beat() {
+    SPEC.given({StorylineTitle}Storyline.{EVENT_BEAT}).then({StorylineTitle}Storyline.{COMMAND_BEAT});
+}
+```
 
-| GWT Element | Test Code |
-|---|---|
-| Event in Given | `processor.react(new Event(...))` (or `onSetup(...)` for a setup event) |
-| Multiple events in Given | multiple calls — setup events first, trigger last |
-| Command in Then | `verify(targetCommandHandler).handle(eq(expectedCommand))` |
-| NOTHING in Then | `verifyNoInteractions(targetCommandHandler)` |
+With a private read model, the given beats are the storyline's setup EVENT beats plus the trigger
+beat, trigger last (see `ActivateItemsAtOpenedLocationSpecification`). If the beat after the trigger
+isn't a COMMAND this automation dispatches, don't force a test.
 
-### Storyline-Derived Tests (Optional)
+## Step 7: Shell test — `{AutomationName}ProcessorTest`
 
-`slice.json` may also carry a `storylines[]` array — narrated walkthroughs with an ordered
-`elements[]` "beats" sequence (EVENT/COMMAND/READMODEL/...). This is a secondary, supplementary
-source; `specifications[]` above stays the primary and default source of test cases. Most slices
-have no `storylines[]` — skip silently when there's nothing relevant.
+No mocks: wire the processor to the **real** target command handler(s) on one shared
+`InMemoryUmaDbClient`, and feed it raw events exactly as `EventDispatcher` would
+(`{Context}Events.MAPPING.encode(...)`, or the last event read back from the store). Copy
+`ActivateRegisteredItemProcessorTest` (stateless) or `ActivateItemsAtOpenedLocationProcessorTest`
+(read model — its `dispatch()` helper plays `EventDispatcher`, delivering every event in store
+order, including those the automation's own commands append) and adapt — at minimum:
 
-Find a beat whose `type` is `EVENT` immediately followed by a `COMMAND` beat this automation
-dispatches. That pair is a ready-made test: `given` = the cumulative preceding `EVENT` beats
-(setup events) through the trigger beat, `then` = `verify(targetCommandHandler).handle(eq(...))`
-built from the command beat's fields — same shape as the "Mapping GWT Scenarios to Tests" row
-above, just sourced from the storyline instead of `specifications[]`.
+1. `supports` answers true for the trigger (and setup) types only.
+2. Condition met → the target slice's event is in the store.
+3. Condition not met → nothing appended.
+4. The same trigger delivered twice (a dispatcher replay) → the target event exists only once. With
+   a read model: a fresh processor fed the whole store again (a restart) → still only once.
 
-If the beat following the trigger event isn't a COMMAND this automation dispatches, don't force a
-test — leave it undocumented rather than fabricating an assertion.
+If test 4 fails, the target slice's core must return `List.of()` for a repeat — fix it there.
 
-## References
+## Translation slices (`sliceType === "TRANSLATION"`)
 
-- [Feature Flag Patterns](references/feature-flag-patterns.md) — `@ConditionalOnProperty`, wired the same as `build-state-change`
+A translation connects an **external system** with this context — the same core/shell split, under
+`.../slices/{context}/translation/{slicename}/`. Read `description`/`notes` in slice.json to see the
+direction. Verified references: `slices/blueprint/translation/facilitysitestatus/` (inbound) and
+`slices/blueprint/translation/reportitemtoassetregistry/` (outbound), both replayed end to end by
+the `SiteGoesLiveStoryline`.
 
-## Final Verification: Does the Implementation Match slice.json?
+### Inbound: external message → our command (anti-corruption layer)
 
-Before marking this slice as `Done`, verify the implementation against slice.json:
+```
+translation/{slicename}/
+├── {ExternalMessage}.java          ← THEIR vocabulary, plain record, no annotations (core input)
+├── {SliceName}Translator.java      ← IMPERATIVE SHELL: translate, dispatch into the target shell
+├── {SliceName}Webhook.java         ← trigger (REST); a Kafka/Spring listener would call the same shell
+└── funcore/{SliceName}Translation.java  ← FUNCTIONAL CORE: translate(message) → List<OurCommand>
+```
 
-- [ ] The trigger event in the processor matches the trigger event in slice.json exactly
-- [ ] The command dispatched matches the target command defined in slice.json
-- [ ] All fields mapped from trigger event to command come from the event fields defined in slice.json — no invented mappings
-- [ ] Every GWT scenario in `specifications[]` maps to a test case in the test class
-- [ ] If `storylines[]` is present: every trigger-EVENT→target-COMMAND beat pair for this automation has a storyline test — or was deliberately skipped as untraceable
-- [ ] No filtering conditions were invented — all conditions come from slice.json `description` or `comments`
-- [ ] No field names were assumed or guessed — if a field is not in slice.json, it is not in the code
+- The core maps their vocabulary to ours (codes, statuses, ids) and **filters** what this context
+  doesn't care about (`List.of()`). Tolerate unknown values: nothing, not an exception.
+- The translator is trigger-agnostic: every channel decodes the message and calls `handle(message)`.
+- No retry and no dedup in the translator — the target shell retries its own conflicts, and the
+  target core must make a redelivered message a no-op (the sender WILL redeliver on non-2xx).
+- Specification: same shape as a stateless automation — `AutomationSpecification.of({SliceName}Translation::translate)`,
+  `given(message).then(command)` / `.thenNothing()`. Shell test: translator wired to the REAL
+  target shell; cover "translated", "ignored", "redelivered → only once"
+  (`FacilitySiteStatusTranslatorTest`).
+
+### Outbound: our event → external system
+
+```
+translation/{slicename}/
+├── {TheirMessage}.java             ← THEIR vocabulary, plain record (core output)
+├── {ExternalSystem}.java           ← port interface: the external call
+├── RestClient{ExternalSystem}.java ← HTTP adapter (package-private @Component, RestClient.create(url))
+├── {SliceName}Translator.java      ← IMPERATIVE SHELL: SliceEventListener
+└── funcore/{SliceName}Translation.java  ← FUNCTIONAL CORE: State + evolve + translate → Optional<Report>
+events/{FactRecorded}.java          ← e.g. ItemReportedToAssetRegistry - recorded after delivery
+```
+
+**The dispatcher replays from position 0 on every start — an outbound translation without a
+recorded fact would call the external system again for ALL history on every restart.** So:
+
+1. The core's `State` knows whether this event was already delivered (`evolve` over the recorded
+   fact); `translate(state, event, now)` returns `Optional.empty()` if so, otherwise a `Report`
+   record holding **both** their message and our fact to record.
+2. The shell folds the fact's boundary, calls the core, then **delivers first, records second**:
+
+```java
+report.ifPresent(r -> {
+    externalSystem.send(r.notice());                                                  // I/O: deliver
+    loader.append(List.of(r.recorded()), {Context}Events.MAPPING, boundary, folded.lastPosition()); // I/O: record
+});
+```
+
+- **At least once**: a crash between deliver and record re-delivers on the next start — put an
+  idempotency key in their message (the entity id) and say so in its Javadoc.
+- **No `ConflictRetry`**: re-running would call the external system again.
+- **External system down**: the port throws, nothing is recorded, the dispatcher logs it, the next
+  start's replay delivers it.
+- Feature flag `slices.{context}.translation.{slicename}.enabled` — **`false` in main** until the
+  external system is reachable (its URL property next to it), `false` in test.
+- Specification: `TranslationSpecification` — `given(facts).when(ourEvent).then(new Report(...))` /
+  `.thenNothing()` for "already delivered". Shell test with an in-memory fake of the port (no mocks),
+  covering "deliver then record", "replay → delivered once", "unreachable → nothing recorded, later
+  delivered" (`ReportItemToAssetRegistryTranslatorTest`).
+
+### Storyline beats for translations
+
+`EXTERNAL` beats become constants of their message records. An inbound translation tests
+`EXTERNAL → COMMAND`, an outbound one `EVENT → EXTERNAL (+ recorded EVENT)` — see
+`SiteGoesLiveStoryline` beats 3 → 4 and 7 → 8 → 9.
+
+## Final Verification
+
+- [ ] The trigger event matches slice.json exactly; the dispatched command is the target command in slice.json
+- [ ] All fields mapped from event to command come from slice.json — no invented mappings, no invented conditions
+- [ ] Every `specifications[]` scenario has exactly one test method in `funcore/{AutomationName}Specification`
+- [ ] If `storylines[]` is present: every trigger-EVENT → COMMAND beat pair has a `@Nested` storyline test — or was deliberately skipped as untraceable
+- [ ] `funcore/` holds only the pure policy; the processor does decoding and dispatch, with no retry of its own
+- [ ] Cross-context triggers only come from the other context's `events` package
+- [ ] Translations: external messages are plain records in THEIR vocabulary; outbound delivers before it records, and is feature-flagged off in main until the external system is reachable
+- [ ] `./mvnw compile -q`, then the slice's tests **and** `FunctionalCoreTest` + `ModularityTest`
+- [ ] If checks pass, commit with `feat: {Slice Name}` and set slice status to `Done`

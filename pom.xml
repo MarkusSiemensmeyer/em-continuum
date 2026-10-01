@@ -18,6 +18,7 @@
     <properties>
         <java.version>27</java.version>
         <umadb-client.version>0.7</umadb-client.version>
+        <spring-modulith.version>2.1.1</spring-modulith.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -56,6 +57,13 @@
         <dependency>
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Modulith annotations only (@NamedInterface on each context's events package) - the
+             verification itself runs in tests via spring-modulith-starter-test below -->
+        <dependency>
+            <groupId>org.springframework.modulith</groupId>
+            <artifactId>spring-modulith-api</artifactId>
         </dependency>
 
         <!-- Auto-starts docker-compose.yml services (umadb, postgres) on app run -->
@@ -108,6 +116,12 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Verifies the slices/{context} module boundaries and the purity of every funcore package -->
+        <dependency>
+            <groupId>org.springframework.modulith</groupId>
+            <artifactId>spring-modulith-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -166,8 +180,33 @@
                     <!-- Mockito's inline mock maker (Byte Buddy) needs this on a JDK newer than
                          its officially-supported range; harmless on older JDKs too. -->
                     <argLine>-Dnet.bytebuddy.experimental=true</argLine>
+                    <!-- Board GWTs live in funcore/*Specification classes - run them next to the usual *Test classes. -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Specification.java</include>
+                    </includes>
                 </configuration>
             </plugin>
         </plugins>
     </build>
+
+    <!-- Spring Modulith isn't managed by spring-boot-starter-parent - import its BOM. -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- ArchUnit (what Modulith reads bytecode with) - newer than Modulith's BOM brings,
+                 which can't read Java 27 class files yet. Declared before the BOM so it wins. -->
+            <dependency>
+                <groupId>com.tngtech.archunit</groupId>
+                <artifactId>archunit</artifactId>
+                <version>1.5.1</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.modulith</groupId>
+                <artifactId>spring-modulith-bom</artifactId>
+                <version>${spring-modulith.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 </project>
